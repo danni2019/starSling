@@ -6,7 +6,7 @@ import (
 )
 
 func TestRenderLogoTitleTemplate(t *testing.T) {
-	logo := RenderLogo(120)
+	logo := RenderLogo(120, 0)
 	if len(logo) != logoHeight {
 		t.Fatalf("expected logo height %d, got %d", logoHeight, len(logo))
 	}
@@ -32,16 +32,18 @@ func TestRenderLogoTitleTemplate(t *testing.T) {
 }
 
 func TestRenderLogoCurve(t *testing.T) {
-	logo := RenderLogo(96)
+	logo := RenderLogo(96, 0)
 	curve := logo[:curveHeight]
 
-	dotCount := 0
+	curveCount := 0
 	minX := 1 << 30
 	maxX := -1
 	startY := -1
 	endY := -1
 	minY := 1 << 30
 	width := 0
+	starX := -1
+	starY := -1
 
 	for y, line := range curve {
 		runes := []rune(line)
@@ -49,15 +51,20 @@ func TestRenderLogoCurve(t *testing.T) {
 			width = len(runes)
 		}
 		for x, r := range runes {
-			if r == '·' {
-				dotCount++
-			}
 			if r == '█' {
 				t.Fatalf("curve area contains forbidden block rune at (%d,%d)", x, y)
 			}
-			if r != '·' && r != '✶' && r != '*' {
+			if isStarRune(r) {
+				if starX == -1 || x > starX {
+					starX = x
+					starY = y
+				}
 				continue
 			}
+			if !isCurveRune(r) {
+				continue
+			}
+			curveCount++
 			if x < minX {
 				minX = x
 				startY = y
@@ -73,8 +80,8 @@ func TestRenderLogoCurve(t *testing.T) {
 		}
 	}
 
-	if dotCount < 20 {
-		t.Fatalf("expected at least 20 curve dots, got %d", dotCount)
+	if curveCount < 20 {
+		t.Fatalf("expected at least 20 curve runes, got %d", curveCount)
 	}
 	if width == 0 {
 		t.Fatalf("curve width not detected")
@@ -84,7 +91,7 @@ func TestRenderLogoCurve(t *testing.T) {
 	right := int(0.70 * float64(width))
 	for y, line := range curve {
 		for x, r := range []rune(line) {
-			if r != '·' && r != '✶' && r != '*' {
+			if !isCurveRune(r) {
 				continue
 			}
 			if x >= left && x <= right && y < minY {
@@ -99,7 +106,29 @@ func TestRenderLogoCurve(t *testing.T) {
 	if minY >= startY-2 {
 		t.Fatalf("apex too low: minY=%d startY=%d", minY, startY)
 	}
-	if minY > endY {
-		t.Fatalf("apex should be at or above end: minY=%d endY=%d", minY, endY)
+	if endY >= startY {
+		t.Fatalf("curve should rise from start to end: startY=%d endY=%d", startY, endY)
 	}
+	if starX == -1 || starY == -1 {
+		t.Fatalf("star not detected on curve")
+	}
+	if starY >= endY {
+		t.Fatalf("star should be above curve end: starY=%d endY=%d", starY, endY)
+	}
+}
+
+func isCurveRune(r rune) bool {
+	if r >= 0x2800 && r <= 0x28FF {
+		return r != 0x2800
+	}
+	switch r {
+	case '─', '╱', '╲', '│', '•':
+		return true
+	default:
+		return false
+	}
+}
+
+func isStarRune(r rune) bool {
+	return r == '✶' || r == '✸' || r == '*'
 }

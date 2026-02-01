@@ -24,7 +24,7 @@ func (ui *UI) buildMainScreen() tview.Primitive {
 	author.SetText("by Yang | github: danni2019/starSling | email: muzexlxl@foxmail.com")
 
 	ui.divider = tview.NewTextView()
-	ui.divider.SetTextAlign(tview.AlignCenter)
+	ui.divider.SetTextAlign(tview.AlignLeft)
 	ui.divider.SetTextColor(colorMuted)
 	ui.divider.SetBackgroundColor(colorBackground)
 
@@ -77,30 +77,94 @@ func (ui *UI) buildMainScreen() tview.Primitive {
 }
 
 func (ui *UI) updateLogo(width int) {
-	logoWidth := min(width, maxLogoWidth)
-	logo := RenderLogo(logoWidth)
+	_, _, curveWidth, _ := ui.curveView.GetInnerRect()
+	_, _, titleViewWidth, _ := ui.titleView.GetInnerRect()
+	logoWidth := min(min(curveWidth, titleViewWidth), maxLogoWidth)
+	logo := RenderLogo(logoWidth, ui.logoFrame)
 	if len(logo) < logoHeight {
 		return
 	}
-	leftPad := max(0, (width-logoWidth)/2)
-	padding := strings.Repeat(" ", leftPad)
+	titleLines := logo[curveHeight:]
+	titleLeft, titleRight := blockBounds(titleLines)
+	titleBlockWidth := 0
+	if titleLeft >= 0 && titleRight >= titleLeft {
+		titleBlockWidth = titleRight - titleLeft + 1
+	}
+	ui.logoTitleWidth = titleBlockWidth
+	titleShift := 0
+	if titleBlockWidth > 0 {
+		titleShift = (logoWidth-titleBlockWidth)/2 - titleLeft
+	}
+	curvePad := max(0, (curveWidth-logoWidth)/2)
+	titlePad := max(0, (titleViewWidth-logoWidth)/2)
+	curvePadding := strings.Repeat(" ", curvePad)
+	titlePadding := strings.Repeat(" ", titlePad)
 	curve := make([]string, 0, curveHeight)
 	title := make([]string, 0, titleHeight)
 	for _, line := range logo[:curveHeight] {
-		curve = append(curve, padding+line)
+		curve = append(curve, curvePadding+line)
 	}
-	for _, line := range logo[curveHeight:] {
-		title = append(title, padding+line)
+	for _, line := range titleLines {
+		shifted := shiftLine(line, titleShift)
+		title = append(title, titlePadding+padRight(shifted, logoWidth))
 	}
 	ui.curveView.SetText(strings.Join(curve, "\n"))
 	ui.titleView.SetText(strings.Join(title, "\n"))
 }
 
 func (ui *UI) updateDivider(width int) {
-	dividerWidth := min(width-4, maxLogoWidth)
+	_, _, dividerWidthRaw, _ := ui.divider.GetInnerRect()
+	dividerWidth := dividerWidthRaw
+	if ui.logoTitleWidth > 0 {
+		dividerWidth = ui.logoTitleWidth
+	}
+	dividerWidth = min(dividerWidth, dividerWidthRaw)
+	dividerWidth = min(dividerWidth, maxLogoWidth)
 	if dividerWidth < 0 {
 		dividerWidth = 0
 	}
-	leftPad := max(0, (width-dividerWidth)/2)
+	leftPad := max(0, (dividerWidthRaw-dividerWidth)/2)
 	ui.divider.SetText(strings.Repeat(" ", leftPad) + strings.Repeat("-", dividerWidth))
+}
+
+func blockBounds(lines []string) (int, int) {
+	left := -1
+	right := -1
+	for _, line := range lines {
+		col := 0
+		for _, r := range line {
+			if r == ' ' {
+				col++
+				continue
+			}
+			if left == -1 || col < left {
+				left = col
+			}
+			if col > right {
+				right = col
+			}
+			col++
+		}
+	}
+	return left, right
+}
+
+func shiftLine(line string, shift int) string {
+	if shift == 0 {
+		return line
+	}
+	if shift > 0 {
+		return strings.Repeat(" ", shift) + line
+	}
+	remove := -shift
+	runes := []rune(line)
+	i := 0
+	for i < len(runes) && remove > 0 {
+		if runes[i] != ' ' {
+			break
+		}
+		i++
+		remove--
+	}
+	return string(runes[i:])
 }

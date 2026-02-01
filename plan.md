@@ -43,7 +43,7 @@ starSling CLI UI 计划（中文强化版，可直接交给 Codex 执行）
 Logo = 上方曲线 + 星星 + 下方标题（STARSLING 像素字）
 
 3.1.1 Logo 画布（防止画太大）
-	•	RenderLogo(width int) []string 必须返回 固定 18 行。
+	•	RenderLogo(width int, frame int) []string 必须返回 固定 18 行。
 	•	logoWidth = min(width, 110)：最大宽度 110 列。
 	•	这 18 行内部再分：
 	•	上 10 行：curve area（曲线+星星）
@@ -71,15 +71,18 @@ Logo = 上方曲线 + 星星 + 下方标题（STARSLING 像素字）
 
 3.1.3 Curve（只允许细线字符，必须是 parabola/弧线）
 	•	Curve Area 严禁使用 █▓▒░（这些只给标题用）。
-	•	Curve 只能用细线字符（固定一种风格，避免混乱）：
-	•	推荐：使用 ·（中点）作为轨迹字符；备用 .。
+	•	Curve 允许使用细线字符：─ ╱ ╲ │ •，以及 Braille 点阵字符（U+2800–U+28FF）用于高分辨率曲线。
 	•	曲线必须是 parabolic/ballistic curve，不能是直线。
 
 曲线定义：二次 Bézier（必须按此公式）
 令 W = logoWidth，H = 10（curve 区高度），锚点：
 	•	P0 起点：(x=round(0.12*W), y=round(0.80*H))
-	•	Pm 控制点（拱顶更高）：(x=round(0.60*W), y=round(0.10*H))
-	•	P1 终点：(x=round(0.88*W), y=round(0.30*H))
+	•	Pm 控制点（拱顶更高）：(x=round(0.60*W), y=round(0.08*H))
+	•	P1 终点：(x=round(0.88*W), y=round(0.05*H))
+
+注：使用 Braille 高分辨率时，实际计算应在子像素网格完成：
+	•	subW = 2*W，subH = 4*H
+	•	在 subW/subH 上应用同样比例后再 round，这样才能体现细微抬升。
 
 对 t 从 0 到 1 采样 N 次（N = 2*W）：
 	•	x(t) = (1-t)^2*P0.x + 2*(1-t)*t*Pm.x + t^2*P1.x

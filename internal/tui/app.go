@@ -61,6 +61,10 @@ type UI struct {
 
 	data   MockData
 	ticker *time.Ticker
+
+	logoTitleWidth int
+	logoFrame      int
+	lastWidth      int
 }
 
 func newUI() *UI {
@@ -208,7 +212,9 @@ func (ui *UI) startTicker() {
 		for range ui.ticker.C {
 			ui.app.QueueUpdateDraw(func() {
 				ui.data = ui.data.Tick()
+				ui.logoFrame = (ui.logoFrame + 1) % 2
 				ui.updateLiveData()
+				ui.updateLogo(ui.lastWidth)
 			})
 		}
 	}()
@@ -222,6 +228,7 @@ func (ui *UI) stopTicker() {
 
 func (ui *UI) beforeDraw(screen tcell.Screen) bool {
 	width, _ := screen.Size()
+	ui.lastWidth = width
 	ui.updateLogo(width)
 	ui.updateDivider(width)
 	return false
