@@ -227,7 +227,7 @@ func fetchAndStore(ctx context.Context, client *http.Client, cacheDir string, so
 		return fmt.Errorf("write metadata: %w", err)
 	}
 
-	logger.Info("metadata updated", "source", source.Name)
+	logger.Info("metadata updated", "source", source.Name, "cache", cacheDir)
 	return nil
 }
 

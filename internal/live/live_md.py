@@ -1,8 +1,12 @@
 import argparse
 import json
+import os
 import signal
 import sys
 import time
+from datetime import datetime, timedelta
+import pandas as pd
+import numpy as np
 
 from openctp_ctp import thostmduserapi as mdapi
 
@@ -18,6 +22,36 @@ def parse_instruments(raw: str) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+def metadata_cache_dirs() -> list[str]:
+    dirs = []
+    if sys.platform == "darwin":
+        dirs.append(os.path.join(os.path.expanduser("~"), "Library", "Application Support", "starsling", "metadata"))
+    else:
+        xdg = os.environ.get("XDG_CONFIG_HOME")
+        if xdg:
+            dirs.append(os.path.join(xdg, "starsling", "metadata"))
+        else:
+            dirs.append(os.path.join(os.path.expanduser("~"), ".config", "starsling", "metadata"))
+    dirs.append(os.path.join(os.getcwd(), "runtime", "metadata"))
+    return dirs
+
+
+def load_metadata_payload(name: str):
+    filename = f"{name}.json"
+    for base in metadata_cache_dirs():
+        path = os.path.join(base, filename)
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                cached = json.load(handle)
+            return cached.get("data")
+        except FileNotFoundError:
+            continue
+        except Exception as exc:
+            log(f"metadata load failed ({name}): {exc}")
+            continue
+    return None
+
+
 class MdSpi(mdapi.CThostFtdcMdSpi):
     def __init__(self, front: str, instruments: list[str], username: str, password: str) -> None:
         super().__init__()
@@ -30,6 +64,39 @@ class MdSpi(mdapi.CThostFtdcMdSpi):
         self.login_ok = False
         self.login_failed = False
         self.failure_reason = ""
+        self.tick_buff = {}
+        self.contract_meta_data = self.__contract_meta__()
+
+    def __contract_meta__(self):
+        contract_meta_data = load_metadata_payload("contract")
+        if self.contract_meta_data is None:
+            raise ValueError(f"Missing Critical Metadata: Contract Meta Not Found.")
+        contract_data = contract_meta_data.get("data", None)
+        if contract_data is None or (isinstance(contract_data, list) and len(contract_data) == 0):
+            raise ValueError(f"Missing Critical Metadata: Contract Meta Not Found.")
+        df = pd.DataFrame(contract_data)
+        df = df[[
+            'ExchangeID', 'InstrumentID', 'InstrumentName', 'ProductClass', 'ProductID', 'VolumeMultiple', 
+            'OpenDate', 'ExpireDate', 'UnderlyingInstrID', 'OptionsType', 'StrikePrice', 'InstLifePhase'
+        ]].copy()
+
+        df = df.rename(
+            columns={
+                'ExchangeID': 'exchange', 
+                'InstrumentID': 'ctp_contract', 
+                'InstrumentName': 'name', 
+                'ProductClass': 'product_class', 
+                'ProductID': 'symbol', 
+                'VolumeMultiple': 'multiplier', 
+                'OpenDate': 'list_date', 
+                'ExpireDate': 'expiry_date', 
+                'UnderlyingInstrID': 'underlying', 
+                'OptionsType': 'option_type', 
+                'StrikePrice': 'strike', 
+                'InstLifePhase': 'status'
+            }
+        ).set_index('ctp_contract', drop=True)
+        return df
 
     def Run(self) -> None:
         self.api = mdapi.CThostFtdcMdApi.CreateFtdcMdApi()
@@ -83,16 +150,103 @@ class MdSpi(mdapi.CThostFtdcMdSpi):
             "TradingDay": pDepthMarketData.TradingDay,
             "InstrumentID": pDepthMarketData.InstrumentID,
             "ExchangeID": pDepthMarketData.ExchangeID,
+            "ExchangeInstID": pDepthMarketData.ExchangeInstID,
             "LastPrice": pDepthMarketData.LastPrice,
+            "PreSettlementPrice": pDepthMarketData.PreSettlementPrice,
+            "PreClosePrice": pDepthMarketData.PreClosePrice,
+            "PreOpenInterest": pDepthMarketData.PreOpenInterest,
+            "OpenPrice": pDepthMarketData.OpenPrice,
+            "HighestPrice": pDepthMarketData.HighestPrice,
+            "LowestPrice": pDepthMarketData.LowestPrice,
             "Volume": pDepthMarketData.Volume,
+            "Turnover": pDepthMarketData.Turnover,
+            "OpenInterest": pDepthMarketData.OpenInterest,
+            "ClosePrice": pDepthMarketData.ClosePrice,
+            "SettlementPrice": pDepthMarketData.SettlementPrice,
+            "UpperLimitPrice": pDepthMarketData.UpperLimitPrice,
+            "LowerLimitPrice": pDepthMarketData.LowerLimitPrice,
+            "PreDelta": pDepthMarketData.PreDelta,
+            "CurrDelta": pDepthMarketData.CurrDelta,
             "UpdateTime": pDepthMarketData.UpdateTime,
             "UpdateMillisec": pDepthMarketData.UpdateMillisec,
             "BidPrice1": pDepthMarketData.BidPrice1,
             "BidVolume1": pDepthMarketData.BidVolume1,
             "AskPrice1": pDepthMarketData.AskPrice1,
             "AskVolume1": pDepthMarketData.AskVolume1,
+            "AveragePrice": pDepthMarketData.AveragePrice,
+            "ActionDay": pDepthMarketData.ActionDay
         }
-        print(json.dumps(tick, separators=(",", ":")), flush=True)
+        self.tick_buff[pDepthMarketData.InstrumentID] = tick
+
+    def __raw_md_snapshot__(self):
+        return pd.DataFrame.from_dict(self.tick_buff.copy(), orient='index')
+
+    def md(self):
+        md_df = self.__raw_md_snapshot__()
+        cond = md_df[md_df.dtypes[md_df.dtypes.astype(str).isin(['float64', 'int64'])].index.tolist()] > 1e10
+        md_df[
+            md_df.dtypes[md_df.dtypes.astype(str).isin(['float64', 'int64'])].index.tolist()
+        ] = md_df[
+            md_df.dtypes[md_df.dtypes.astype(str).isin(['float64', 'int64'])].index.tolist()
+        ].mask(cond, np.nan)
+        
+        md_df['datetime'] = pd.to_datetime(
+            md_df['ActionDay'].astype(str) +
+            " " +
+            md_df['UpdateTime'] +
+            "." +
+            md_df['UpdateMillisec'].astype(str)
+        )
+        md_df['datetime_minute'] = pd.to_datetime(
+            md_df['ActionDay'].astype(str) +
+            " " +
+            md_df['UpdateTime']
+        ).dt.ceil("1min")
+        md_df = md_df[
+            (md_df['datetime'] <= (datetime.now() + timedelta(minutes=2))) &
+            (md_df['datetime'] >= (datetime.now() + timedelta(minutes=-2)))
+        ].copy()
+
+        md_df = md_df.drop(
+            columns=[
+                'ExchangeID', 'ExchangeInstID', 'PreDelta', 'CurrDelta',
+                'UpdateTime', 'UpdateMillisec', 'ActionDay'
+            ]
+        ).rename(
+            columns={
+                'TradingDay': 'trading_date',
+                'InstrumentID': 'ctp_contract',
+                'LastPrice': 'last',
+                'PreSettlementPrice': 'pre_settlement',
+                'PreClosePrice': 'pre_close',
+                'PreOpenInterest': 'pre_open_interest',
+                'OpenPrice': 'open',
+                'HighestPrice': 'high',
+                'LowestPrice': 'low',
+                'Volume': 'volume',
+                'Turnover': 'turnover',
+                'OpenInterest': 'open_interest',
+                'ClosePrice': 'close',
+                'SettlementPrice': 'settlement',
+                'UpperLimitPrice': 'limit_up',
+                'LowerLimitPrice': 'limit_down',
+                'BidPrice1': 'bid1',
+                'AskPrice1': 'ask1',
+                'BidVolume1': 'bid_vol1',
+                'AskVolume1': 'ask_vol1',
+                'AveragePrice': 'average_price',
+
+            }
+        ).set_index('ctp_contract', drop=False)
+
+        contract_df = self.contract_meta_data.copy()
+        md_df[[
+            'exchange', 'name', 'product_class', 'symbol', 'multiplier', 'list_date', 'expiry_date', 'underlying', 'option_type', 'strike', 'status'
+        ]] = contract_df.loc[contract_df.index.intersection(md_df.index)][[
+            'exchange', 'name', 'product_class', 'symbol', 'multiplier', 'list_date', 'expiry_date', 'underlying', 'option_type', 'strike', 'status'
+        ]].reindex(md_df.index)
+
+        return md_df
 
 
 def parse_args() -> argparse.Namespace:
@@ -141,6 +295,9 @@ def main() -> int:
             exit_code = 2
             break
         time.sleep(0.2)
+
+        md = spi.md()
+        print(md)
 
     if spi.login_failed:
         exit_code = 2
