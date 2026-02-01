@@ -1,0 +1,180 @@
+请求url：http://dict.openctp.cn/products
+
+url参数：
+
+types: 可选，商品类型，如stock、bond、fund、futures、option等（注意只有futures是复数），多个值之间用','号隔开，如types=futures,option。
+areas: 可选，国家/地区，如China、USA、UK、Singapore等，多个值之间用','号隔开，如areas=China,USA。
+markets: 可选，交易所列表，如SHFE、CFFEX、SSE、SZSE等，多个值之间用','号隔开，如markets=SHFE,CFFEX。
+products: 可选，品种列表，如au、rb、TA、IF等，多个值之间用','号隔开，如products=au,rb,IF。
+应答：json数据
+
+例：http://dict.openctp.cn/products?types=futures&markets=SHFE,CFFEX
+
+{
+  "rsp_code": 0,
+  "rsp_message": "succeed",
+  "data": [
+    {
+      "ExchangeID": "SHFE", // 交易所ID
+      "ProductID": "ag",  // 品种ID
+      "ProductName": "白银", // 品种名称
+      "ProductClass": "1" // 商品类别（'1'-期货，'2'-期权，'3'-组合，'8'-股票，'f'-基金,'b'-债券）
+    },
+    {
+      "ExchangeID": "SHFE",
+      "ProductID": "al",
+      "ProductName": "铝",
+      "ProductClass": "1"
+    },
+    {
+      "ExchangeID": "SHFE",
+      "ProductID": "ao",
+      "ProductName": "氧化铝",
+      "ProductClass": "1"
+    },
+    {
+      "ExchangeID": "SHFE",
+      "ProductID": "au",
+      "ProductName": "黄金",
+      "ProductClass": "1"
+    },
+    {
+      "ExchangeID": "SHFE",
+      "ProductID": "br",
+      "ProductName": "丁二烯橡胶",
+      "ProductClass": "1"
+    },
+    {
+      "ExchangeID": "SHFE",
+      "ProductID": "bu",
+      "ProductName": "石油沥青",
+      "ProductClass": "1"
+    },
+    {
+      "ExchangeID": "SHFE",
+      "ProductID": "cu",
+      "ProductName": "铜",
+      "ProductClass": "1"
+    },
+    {
+      "ExchangeID": "SHFE",
+      "ProductID": "fu",
+      "ProductName": "燃料油",
+      "ProductClass": "1"
+    },
+    {
+      "ExchangeID": "SHFE",
+      "ProductID": "hc",
+      "ProductName": "热轧卷板",
+      "ProductClass": "1"
+    },
+    {
+      "ExchangeID": "CFFEX",
+      "ProductID": "IC",
+      "ProductName": "中证500指数",
+      "ProductClass": "1"
+    },
+    {
+      "ExchangeID": "CFFEX",
+      "ProductID": "IF",
+      "ProductName": "沪深300指数",
+      "ProductClass": "1"
+    },
+    {
+      "ExchangeID": "CFFEX",
+      "ProductID": "IH",
+      "ProductName": "上证50指数",
+      "ProductClass": "1"
+    },
+    {
+      "ExchangeID": "CFFEX",
+      "ProductID": "IM",
+      "ProductName": "中证1000指数",
+      "ProductClass": "1"
+    },
+    {
+      "ExchangeID": "CFFEX",
+      "ProductID": "IZ",
+      "ProductName": "深证100指数",
+      "ProductClass": "1"
+    },
+    {
+      "ExchangeID": "SHFE",
+      "ProductID": "ni",
+      "ProductName": "镍",
+      "ProductClass": "1"
+    },
+    {
+      "ExchangeID": "SHFE",
+      "ProductID": "pb",
+      "ProductName": "铅",
+      "ProductClass": "1"
+    },
+    {
+      "ExchangeID": "SHFE",
+      "ProductID": "rb",
+      "ProductName": "螺纹钢",
+      "ProductClass": "1"
+    },
+    {
+      "ExchangeID": "SHFE",
+      "ProductID": "ru",
+      "ProductName": "天然橡胶",
+      "ProductClass": "1"
+    },
+    {
+      "ExchangeID": "SHFE",
+      "ProductID": "sn",
+      "ProductName": "锡",
+      "ProductClass": "1"
+    },
+    {
+      "ExchangeID": "SHFE",
+      "ProductID": "sp",
+      "ProductName": "漂针浆",
+      "ProductClass": "1"
+    },
+    {
+      "ExchangeID": "SHFE",
+      "ProductID": "ss",
+      "ProductName": "不锈钢",
+      "ProductClass": "1"
+    },
+    {
+      "ExchangeID": "CFFEX",
+      "ProductID": "T",
+      "ProductName": "10年期国债期货",
+      "ProductClass": "1"
+    },
+    {
+      "ExchangeID": "CFFEX",
+      "ProductID": "TF",
+      "ProductName": "5年期国债期货",
+      "ProductClass": "1"
+    },
+    {
+      "ExchangeID": "CFFEX",
+      "ProductID": "TL",
+      "ProductName": "30年期国债期货",
+      "ProductClass": "1"
+    },
+    {
+      "ExchangeID": "CFFEX",
+      "ProductID": "TS",
+      "ProductName": "2年期国债期货",
+      "ProductClass": "1"
+    },
+    {
+      "ExchangeID": "SHFE",
+      "ProductID": "wr",
+      "ProductName": "线材",
+      "ProductClass": "1"
+    },
+    {
+      "ExchangeID": "SHFE",
+      "ProductID": "zn",
+      "ProductName": "锌",
+      "ProductClass": "1"
+    }
+  ]
+}

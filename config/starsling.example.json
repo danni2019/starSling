@@ -1,0 +1,15 @@
+{
+  "runtime": {
+    "check_interval_seconds": 30,
+    "idle_log_interval_seconds": 300
+  },
+  "live-md": {
+    "api": "ctp",
+    "protocol": "tcp",
+    "host": "180.166.37.178",
+    "port": 41215,
+    "username": "",
+    "pwd": "",
+    "instruments": []
+  }
+}

@@ -1,0 +1,138 @@
+合约信息接口
+请求url：http://dict.openctp.cn/instruments
+
+url参数：
+
+types: 可选，商品类型，如stock、bond、fund、futures、option等（注意只有futures是复数），多个值之间用','号隔开，如types=futures,option。
+areas: 可选，国家/地区，如China、USA、UK、Singapore等，多个值之间用','号隔开，如areas=China,USA。
+markets: 可选，交易所列表，如SHFE、CFFEX、SSE、SZSE等，多个值之间用','号隔开，如markets=SHFE,CFFEX。
+products: 可选，品种列表，如au、rb、TA、IF等，多个值之间用','号隔开，如products=au,rb,IF。
+instruments: 可选，合约列表，如IF2509,au2512,rb2512等，多个值之间用','号隔开，如instruments=IF2509,au2512,rb2512。
+应答：json数据
+
+例：http://dict.openctp.cn/instruments?types=futures&markets=SHFE,CFFEX&products=au,rb,IF,IM
+
+例（指定合约）：http://dict.openctp.cn/instruments?instruments=IF2509,au2512,rb2512
+
+{
+  "rsp_code": 0,
+  "rsp_message": "succeed",
+  "data": [
+    {
+      "ExchangeID": "CFFEX", // 交易所ID
+      "InstrumentID": "IF2505", // 合约ID
+      "InstrumentName": "股指2505", // 合约名称
+      "ProductClass": "1", // 商品类别（'1'-期货，'2'-期权，'3'-组合，'8'-股票，'f'-基金,'b'-债券）
+      "ProductID": "IF", // 品种ID
+      "VolumeMultiple": 300, // 合约乘数
+      "PriceTick": 0.2, // 最小变动价位
+      "LongMarginRatioByMoney": 0.12, // 做多保证金率
+      "ShortMarginRatioByMoney": 0.12, // 做空保证金率
+      "LongMarginRatioByVolume": 0, // 做多保证金/手
+      "ShortMarginRatioByVolume": 0, // 做空保证金/手
+      "OpenRatioByMoney": 0.0000238, // 开仓手续费率
+      "OpenRatioByVolume": 0.01, // 开仓手续费/手
+      "CloseRatioByMoney": 0.0000238, // 平仓手续费率
+      "CloseRatioByVolume": 0.01, // 平仓手续费/手
+      "CloseTodayRatioByMoney": 0.0002308, // 平今手续费
+      "CloseTodayRatioByVolume": 0.01, // 平今手续费/手
+      "DeliveryYear": 2025, // 交割年份
+      "DeliveryMonth": 5, // 交割月份
+      "OpenDate": "2025-03-24", // 上市日期
+      "ExpireDate": "2025-05-16", // 最后交易日
+      "DeliveryDate": "2025-05-16", // 交割日
+      "UnderlyingInstrID": "IF", // 标的合约ID
+      "UnderlyingMultiple": 1, // 标的合约乘数
+      "OptionsType": "", // 期权类型（'1'-认购，'2'-认沽）
+      "StrikePrice": null, // 行权价
+      "InstLifePhase": "1" // 合约状态（'0'-未上市，'1'-上市，'2'-停牌，'3'-到期/退市）
+    },
+    {
+      "ExchangeID": "CFFEX",
+      "InstrumentID": "IM2505",
+      "InstrumentName": "中证1000股指期货2505",
+      "ProductClass": "1",
+      "ProductID": "IM",
+      "VolumeMultiple": 200,
+      "PriceTick": 0.2,
+      "LongMarginRatioByMoney": 0.12,
+      "ShortMarginRatioByMoney": 0.12,
+      "LongMarginRatioByVolume": 0,
+      "ShortMarginRatioByVolume": 0,
+      "OpenRatioByMoney": 0.0000238,
+      "OpenRatioByVolume": 0.01,
+      "CloseRatioByMoney": 0.0000238,
+      "CloseRatioByVolume": 0.01,
+      "CloseTodayRatioByMoney": 0.0002308,
+      "CloseTodayRatioByVolume": 0.01,
+      "DeliveryYear": 2025,
+      "DeliveryMonth": 5,
+      "OpenDate": "2025-03-24",
+      "ExpireDate": "2025-05-16",
+      "DeliveryDate": "2025-05-16",
+      "UnderlyingInstrID": "IM",
+      "UnderlyingMultiple": 1,
+      "OptionsType": "",
+      "StrikePrice": null,
+      "InstLifePhase": "1"
+    },
+    {
+      "ExchangeID": "SHFE",
+      "InstrumentID": "au2505",
+      "InstrumentName": "au2505",
+      "ProductClass": "1",
+      "ProductID": "au",
+      "VolumeMultiple": 1000,
+      "PriceTick": 0.02,
+      "LongMarginRatioByMoney": 0.2,
+      "ShortMarginRatioByMoney": 0.2,
+      "LongMarginRatioByVolume": 0,
+      "ShortMarginRatioByVolume": 0,
+      "OpenRatioByMoney": 8e-7,
+      "OpenRatioByVolume": 10.01,
+      "CloseRatioByMoney": 8e-7,
+      "CloseRatioByVolume": 10.01,
+      "CloseTodayRatioByMoney": 8e-7,
+      "CloseTodayRatioByVolume": 0,
+      "DeliveryYear": 2025,
+      "DeliveryMonth": 5,
+      "OpenDate": "2025-02-18",
+      "ExpireDate": "2025-05-15",
+      "DeliveryDate": "2025-05-16",
+      "UnderlyingInstrID": "au",
+      "UnderlyingMultiple": 1,
+      "OptionsType": "",
+      "StrikePrice": null,
+      "InstLifePhase": "1"
+    },
+    {
+      "ExchangeID": "SHFE",
+      "InstrumentID": "rb2505",
+      "InstrumentName": "rb2505",
+      "ProductClass": "1",
+      "ProductID": "rb",
+      "VolumeMultiple": 10,
+      "PriceTick": 1,
+      "LongMarginRatioByMoney": 0.2,
+      "ShortMarginRatioByMoney": 0.2,
+      "LongMarginRatioByVolume": 0,
+      "ShortMarginRatioByVolume": 0,
+      "OpenRatioByMoney": 0.0001008,
+      "OpenRatioByVolume": 0.01,
+      "CloseRatioByMoney": 0.0001008,
+      "CloseRatioByVolume": 0.01,
+      "CloseTodayRatioByMoney": 0.0001008,
+      "CloseTodayRatioByVolume": 0.01,
+      "DeliveryYear": 2025,
+      "DeliveryMonth": 5,
+      "OpenDate": "2024-05-16",
+      "ExpireDate": "2025-05-15",
+      "DeliveryDate": "2025-05-16",
+      "UnderlyingInstrID": "rb",
+      "UnderlyingMultiple": 1,
+      "OptionsType": "",
+      "StrikePrice": null,
+      "InstLifePhase": "1"
+    }
+  ]
+}

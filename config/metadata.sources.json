@@ -1,0 +1,20 @@
+{
+  "sources": [
+    {
+      "name": "trade_time",
+      "url": "http://dict.openctp.cn/times?types=futures,option&markets=SHFE,CZCE,DCE,INE,GFEX"
+    },
+    {
+      "name": "exchange",
+      "url": "http://dict.openctp.cn/markets?areas=China"
+    },
+    {
+      "name": "spec",
+      "url": "http://dict.openctp.cn/products?types=futures,option&markets=SHFE,CZCE,DCE,INE,GFEX"
+    },
+    {
+      "name": "contract",
+      "url": "http://dict.openctp.cn/instruments?types=futures,option&markets=SHFE,CZCE,DCE,INE,GFEX"
+    }
+  ]
+}

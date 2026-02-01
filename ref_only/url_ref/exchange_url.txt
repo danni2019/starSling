@@ -1,0 +1,78 @@
+请求url：http://dict.openctp.cn/markets
+
+url参数：
+
+areas: 可选，国家/地区，如China、USA、UK、Singapore等，多个值之间用','号隔开，如areas=China,USA。
+应答：json数据
+
+例：http://dict.openctp.cn/markets?areas=China
+
+{
+  "rsp_code": 0,
+  "rsp_message": "succeed",
+  "data": [
+    {
+      "ExchangeID": "BSE", // 交易所ID
+      "ExchangeName": "北京证券交易所", // 交易所名称
+      "TimeZone": 8, // 时区
+      "ShortName": "北交所", // 简称
+      "Area": "China" // 地区
+    },
+    {
+      "ExchangeID": "CFFEX",
+      "ExchangeName": "中国金融期货交易所",
+      "TimeZone": 8,
+      "ShortName": "中金所",
+      "Area": "China"
+    },
+    {
+      "ExchangeID": "CZCE",
+      "ExchangeName": "郑州商品交易所",
+      "TimeZone": 8,
+      "ShortName": "郑商所",
+      "Area": "China"
+    },
+    {
+      "ExchangeID": "DCE",
+      "ExchangeName": "大连商品交易所",
+      "TimeZone": 8,
+      "ShortName": "大商所",
+      "Area": "China"
+    },
+    {
+      "ExchangeID": "GFEX",
+      "ExchangeName": "广州期货交易所",
+      "TimeZone": 8,
+      "ShortName": "广期所",
+      "Area": "China"
+    },
+    {
+      "ExchangeID": "INE",
+      "ExchangeName": "上海国际能源交易中心",
+      "TimeZone": 8,
+      "ShortName": "能源中心",
+      "Area": "China"
+    },
+    {
+      "ExchangeID": "SHFE",
+      "ExchangeName": "上海期货交易所",
+      "TimeZone": 8,
+      "ShortName": "上期所",
+      "Area": "China"
+    },
+    {
+      "ExchangeID": "SSE",
+      "ExchangeName": "上海证券交易所",
+      "TimeZone": 8,
+      "ShortName": "上交所",
+      "Area": "China"
+    },
+    {
+      "ExchangeID": "SZSE",
+      "ExchangeName": "深圳证券交易所",
+      "TimeZone": 8,
+      "ShortName": "深交所",
+      "Area": "China"
+    }
+  ]
+}

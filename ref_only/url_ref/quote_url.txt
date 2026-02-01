@@ -1,0 +1,110 @@
+报价信息接口
+请求url：http://dict.openctp.cn/prices
+
+url参数：
+
+types: 可选，商品类型，如stock、bond、fund、futures、option等（注意只有futures是复数），多个值之间用','号隔开，如types=futures,option。
+areas: 可选，国家/地区，如China、USA、UK、Singapore等，多个值之间用','号隔开，如areas=China,USA。
+markets: 可选，交易所列表，如SHFE、CFFEX、SSE、SZSE等，多个值之间用','号隔开，如markets=SHFE,CFFEX。
+products: 可选，品种列表，如au、rb、TA、IF等，多个值之间用','号隔开，如products=au,rb,IF。
+instruments: 可选，合约列表，如IF2509,au2512,rb2512等，多个值之间用','号隔开，如instruments=IF2509,au2512,rb2512。
+应答：json数据
+
+例：http://dict.openctp.cn/prices?types=futures&markets=SHFE,CFFEX&products=au,rb,IF,IM
+
+例（指定合约）：http://dict.openctp.cn/prices?instruments=IF2509,au2512,rb2512
+
+{
+  "rsp_code": 0,
+  "rsp_message": "succeed",
+  "data": [
+    {
+      "ExchangeID": "SHFE", // 交易所ID
+      "InstrumentID": "ag2505", // 合约ID
+      "ProductID": "ag", // 品种ID
+      "ProductClass": "1", // 商品类别
+      "LastPrice": 8160, // 最新价
+      "Volume": 0, // 成交量
+      "Turnover": 0, // 成交额
+      "OpenInterest": 5216, // 持仓量
+      "OpenPrice": null, // 开盘价
+      "HighestPrice": null, // 最高价
+      "LowestPrice": null, // 最低价
+      "ClosePrice": null, // 收盘价
+      "SettlementPrice": null, // 结算价
+      "PreClosePrice": 8160, // 昨收价
+      "PreSettlementPrice": 8142, // 昨结价
+      "UpperLimitPrice": 9037, // 涨停价
+      "LowerLimitPrice": 7246, // 跌停价
+      "UpdateTime": "21:23:56", // 更新时间
+      "UpdateDate": "2025-05-09", // 更新日期
+      "TradingDay": "2025-05-12" // 交易日
+    },
+    {
+      "ExchangeID": "CFFEX",
+      "InstrumentID": "IF2505",
+      "ProductID": "IF",
+      "ProductClass": "1",
+      "LastPrice": null,
+      "Volume": 0,
+      "Turnover": 0,
+      "OpenInterest": 40133,
+      "OpenPrice": 0,
+      "HighestPrice": 0,
+      "LowestPrice": 0,
+      "ClosePrice": 0,
+      "SettlementPrice": 0,
+      "PreClosePrice": 3840.2,
+      "PreSettlementPrice": 3839.2,
+      "UpperLimitPrice": 0,
+      "LowerLimitPrice": 0,
+      "UpdateTime": "",
+      "UpdateDate": "",
+      "TradingDay": "2025-05-12"
+    },
+    {
+      "ExchangeID": "CFFEX",
+      "InstrumentID": "IM2506",
+      "ProductID": "IM",
+      "ProductClass": "1",
+      "LastPrice": null,
+      "Volume": 0,
+      "Turnover": 0,
+      "OpenInterest": 165673,
+      "OpenPrice": 0,
+      "HighestPrice": 0,
+      "LowestPrice": 0,
+      "ClosePrice": 0,
+      "SettlementPrice": 0,
+      "PreClosePrice": 5945.2,
+      "PreSettlementPrice": 5944,
+      "UpperLimitPrice": 0,
+      "LowerLimitPrice": 0,
+      "UpdateTime": "",
+      "UpdateDate": "",
+      "TradingDay": "2025-05-12"
+    },
+    {
+      "ExchangeID": "SHFE",
+      "InstrumentID": "rb2509",
+      "ProductID": "rb",
+      "ProductClass": "1",
+      "LastPrice": 3026,
+      "Volume": 9396,
+      "Turnover": 0,
+      "OpenInterest": 265145,
+      "OpenPrice": 3020,
+      "HighestPrice": 3030,
+      "LowestPrice": 3017,
+      "ClosePrice": null,
+      "SettlementPrice": null,
+      "PreClosePrice": 3019,
+      "PreSettlementPrice": 3037,
+      "UpperLimitPrice": 3188,
+      "LowerLimitPrice": 2885,
+      "UpdateTime": "21:28:13",
+      "UpdateDate": "2025-05-09",
+      "TradingDay": "2025-05-12"
+    }
+  ]
+}

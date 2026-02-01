@@ -1,0 +1,91 @@
+交易时段接口
+请求url：http://dict.openctp.cn/times
+
+url参数：
+
+types: 可选，商品类型，如stock、bond、fund、futures、option等（注意只有futures是复数），多个值之间用','号隔开，如types=futures,option。
+areas: 可选，国家/地区，如China、USA、UK、Singapore等，多个值之间用','号隔开，如areas=China,USA。
+markets: 可选，交易所列表，如SHFE、CFFEX、SSE、SZSE等，多个值之间用','号隔开，如markets=SHFE,CFFEX。
+products: 可选，品种列表，如au、rb、TA、IF等，多个值之间用','号隔开，如products=au,rb,IF。
+应答：json数据
+
+例：http://dict.openctp.cn/times?types=futures&markets=SHFE,CFFEX&products=au,rb,IF,IM
+
+{
+  "rsp_code": 0,
+  "rsp_message": "succeed",
+  "data": [
+    {
+      "ExchangeID": "CFFEX", // 交易所ID
+      "ProductID": "IF", // 品种ID
+      "SegmentNo": 1, // 交易时段序号
+      "TimeBegin": "09:30:00", // 开始时间
+      "TimeEnd": "11:30:00", // 结束时间
+      "ProductClass": "1", // 商品类别
+      "Area": "China" // 地区
+    },
+    {
+      "ExchangeID": "CFFEX",
+      "ProductID": "IF",
+      "SegmentNo": 2,
+      "TimeBegin": "13:00:00",
+      "TimeEnd": "15:00:00",
+      "ProductClass": "1",
+      "Area": "China"
+    },
+    {
+      "ExchangeID": "CFFEX",
+      "ProductID": "IM",
+      "SegmentNo": 1,
+      "TimeBegin": "09:30:00",
+      "TimeEnd": "11:30:00",
+      "ProductClass": "1",
+      "Area": "China"
+    },
+    {
+      "ExchangeID": "CFFEX",
+      "ProductID": "IM",
+      "SegmentNo": 2,
+      "TimeBegin": "13:00:00",
+      "TimeEnd": "15:00:00",
+      "ProductClass": "1",
+      "Area": "China"
+    },
+    {
+      "ExchangeID": "SHFE",
+      "ProductID": "ag",
+      "SegmentNo": 1,
+      "TimeBegin": "21:00:00",
+      "TimeEnd": "02:30:00",
+      "ProductClass": "1",
+      "Area": "China"
+    },
+    {
+      "ExchangeID": "SHFE",
+      "ProductID": "ag",
+      "SegmentNo": 2,
+      "TimeBegin": "09:00:00",
+      "TimeEnd": "10:15:00",
+      "ProductClass": "1",
+      "Area": "China"
+    },
+    {
+      "ExchangeID": "SHFE",
+      "ProductID": "ag",
+      "SegmentNo": 3,
+      "TimeBegin": "10:30:00",
+      "TimeEnd": "11:30:00",
+      "ProductClass": "1",
+      "Area": "China"
+    },
+    {
+      "ExchangeID": "SHFE",
+      "ProductID": "ag",
+      "SegmentNo": 4,
+      "TimeBegin": "13:30:00",
+      "TimeEnd": "15:00:00",
+      "ProductClass": "1",
+      "Area": "China"
+    }
+  ]
+}

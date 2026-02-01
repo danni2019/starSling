@@ -1,0 +1,9 @@
+/bin/
+/dist/
+/starsling
+/runtime/
+.venv/
+*.exe
+*.test
+*.out
+.DS_Store

@@ -1,0 +1,13 @@
+1. trade_time: 
+    http://dict.openctp.cn/times?types=futures,option&markets=SHFE,CZCE,DCE,INE,GFEX
+
+2. exchange:
+    http://dict.openctp.cn/markets?areas=China
+
+3. spec:
+    http://dict.openctp.cn/products?types=futures,option&markets=SHFE,CZCE,DCE,INE,GFEX
+
+4. contract:
+    http://dict.openctp.cn/instruments?types=futures,option&markets=SHFE,CZCE,DCE,INE,GFEX
+
+
