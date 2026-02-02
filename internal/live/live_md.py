@@ -96,6 +96,8 @@ class MdSpi(mdapi.CThostFtdcMdSpi):
                 'InstLifePhase': 'status'
             }
         ).set_index('ctp_contract', drop=True)
+        df['strike'] = pd.to_numeric(df['strike'], errors='coerce')
+        df['multiplier'] = pd.to_numeric(df['multiplier'], errors='coerce')
         return df
 
     def Run(self) -> None:
@@ -197,11 +199,6 @@ class MdSpi(mdapi.CThostFtdcMdSpi):
             "." +
             md_df['UpdateMillisec'].astype(str)
         )
-        md_df['datetime_minute'] = pd.to_datetime(
-            md_df['ActionDay'].astype(str) +
-            " " +
-            md_df['UpdateTime']
-        ).dt.ceil("1min")
         md_df = md_df[
             (md_df['datetime'] <= (datetime.now() + timedelta(minutes=2))) &
             (md_df['datetime'] >= (datetime.now() + timedelta(minutes=-2)))
@@ -246,6 +243,11 @@ class MdSpi(mdapi.CThostFtdcMdSpi):
             'exchange', 'name', 'product_class', 'symbol', 'multiplier', 'list_date', 'expiry_date', 'underlying', 'option_type', 'strike', 'status'
         ]].reindex(md_df.index)
 
+        md_df['trading_date'] = pd.to_datetime(md_df['trading_date'])
+        md_df['list_date'] = pd.to_datetime(md_df['list_date'])
+        md_df['expiry_date'] = pd.to_datetime(md_df['expiry_date'])
+
+        md_df.reset_index(drop=True, inplace=True)
         return md_df
 
 
@@ -296,8 +298,7 @@ def main() -> int:
             break
         time.sleep(0.2)
 
-        md = spi.md()
-        print(md)
+        market_snapshot = spi.md()
 
     if spi.login_failed:
         exit_code = 2

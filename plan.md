@@ -1,2 +1,306 @@
-1. 我目前已经将 internal/live/live_md.py 里的业务逻辑基本写完，在while loop 中会循环打印最新的md数据。你所需要做的就是将这个数据输出至目前的 live data panel里进行展示
-2. 完成后，我会继续进行后续其他数据的整理工作。
+# starSling 实时链路方案（JSON-RPC + Router，UI Poll + Section Diff）
+
+> 目标：轻量化实现“行情 500ms 近实时 + 多 Python worker 派生计算 + Go TUI 稳定刷新”。
+> 本文仅覆盖**数据链路 / IPC / 刷新机制 / 技术栈约束**，不再重复 UI 布局设计。
+
+---
+
+## 0. 边界与原则
+
+* **只传最新**：任何链路不做队列堆积；所有计算单元仅获取/处理“最新一次快照”。
+* **UI 稳定刷新**：UI 不因新数据到达而频繁重绘；采用固定 tick 拉取并按 section 独立更新。
+* **协议统一**：全链路统一 JSON-RPC 2.0，复用工具链、日志、调试方式。
+
+---
+
+## 1. 进程与职责
+
+### 1.1 进程列表
+
+* `router`（Go）：
+
+  * 维护最新快照缓存（market/curve/options/unusual/log）
+  * 提供 JSON-RPC server：UI/worker 拉取最新数据；接收 live_md/worker 推送结果
+  * 维护 UI 的控制状态（focus_symbol、sort_spec 等）
+* `live_md`（Python）：
+
+  * 从行情源（未来 CTP）生成 `MarketSnapshot`（500ms）
+  * 通过 JSON-RPC notification 推送给 router
+* `py_worker_*`（Python，多进程，可扩展）：
+
+  * 向 router **拉取**最新 `MarketSnapshot`（不堆积）
+  * 读取 router 中的 `focus_symbol`（用于决定计算范围）
+  * 产出派生快照（curve/options/unusual/log）并推送 router
+* `tui`（Go UI）：
+
+  * 每 500ms（或 1s）向 router 拉取 `ViewSnapshot`
+  * 对比 section `seq`，仅更新变化的 section（section diff）
+  * 高频操作：用户在行情表中改变选中合约时，调用 `SetFocusSymbol` 写入 router
+
+---
+
+## 2. 刷新与频率（核心约束）
+
+### 2.1 live_md -> router（推送）
+
+* 周期：**500ms**
+* 语义：推送 `market.snapshot`（最新一次快照）
+* router 行为：覆盖式更新 `latest_market`（不保留历史，不排队）
+
+### 2.2 worker <- router（拉取）
+
+* worker 计算循环：
+
+  1. 调用 `GetLatestMarket()` 获取最新 market（带 `seq/ts`）
+  2. 如与上次处理的 `seq` 相同，则 sleep（避免重复算）
+  3. 读取 `GetUIState()`（至少含 `focus_symbol`；也可含 sort_spec 等）
+  4. 进行派生计算（允许耗时；不追赶旧数据）
+  5. 通过 notification `curve.snapshot/options.snapshot/unusual.snapshot/log.append` 推送 router
+* router 行为：
+
+  * 对 curve/options：按 symbol 覆盖式缓存 `latest_curve[symbol]` / `latest_options[symbol]`
+  * unusual/log：维护 ring buffer（有上限），但 UI 仍按 tick 拉取
+
+### 2.3 UI <- router（Poll + Section Diff）
+
+* UI tick：建议 **500ms**（与行情一致）；若实际闪烁，可降为 1s。
+* 每个 tick：调用 `GetViewSnapshot(focus_symbol, limits...)`
+* UI 更新策略（独立 section）：
+
+  * 每个 section 都带 `seq`（单调递增）
+  * UI 记录上次渲染的 `seq`：仅当该 section `seq` 变化时才更新该 section
+* UI 稳定性要求（flush & stable）：
+
+  * 原位重绘（in-place redraw），不得向下追加输出
+  * 列宽稳定（固定宽或平滑自适应）
+  * 选中行稳定（基于 row_key）
+  * section 更新原子化：一次 tick 内对每个 section 的更新使用 `QueueUpdateDraw` 聚合执行
+
+---
+
+## 3. JSON-RPC 方法与通知（最小可用集合）
+
+> 约定：
+>
+> * notification：无 id（不需要 response），用于 push
+> * request/response：用于 pull 与 UI 控制
+> * 全部消息都包含 `schema_version`，所有 snapshot 都包含 `ts` 与 `seq`
+
+### 3.1 live_md -> router（notification）
+
+* `market.snapshot` (params: MarketSnapshot)
+
+### 3.2 worker -> router（notification）
+
+* `curve.snapshot` (params: CurveSnapshot)
+* `options.snapshot` (params: OptionsSnapshot)
+* `unusual.snapshot` (params: UnusualSnapshot)
+* `log.append` (params: LogAppend)
+
+### 3.3 UI -> router（request/response）
+
+* `ui.set_focus_symbol` (params: {symbol}) -> {ok}
+* （本期不需要 set_sort_spec，排序仅在 UI 本地生效）
+
+### 3.4 UI/worker <- router（request/response）
+
+* `router.get_latest_market` (params: {min_seq?}) -> MarketSnapshot
+
+  * `min_seq` 可选：若当前最新 seq <= min_seq，则返回 {unchanged:true, seq:latest}（减少 payload）
+* `router.get_ui_state` -> UIState {focus_symbol}
+* `router.get_view_snapshot` (params: {focus_symbol, limits}) -> ViewSnapshot
+
+---
+
+## 4. 数据契约（Snapshot Schemas）
+
+### 4.1 公共字段
+
+* `schema_version`: int
+* `ts`: int64（毫秒或纳秒，统一即可）
+* `seq`: int64（router 或 source 单调递增；每类快照单独递增也可）
+
+### 4.2 MarketSnapshot（用于左上行情表）
+
+* `row_key`: string（例如 "symbol"，用于稳定选中）
+* `columns`: []string（固定顺序）
+* `rows`: []object（每行按 columns 提供字段；数值可为 number 或 string）
+
+### 4.3 CurveSnapshot（右上）
+
+* `symbol`: string
+* `points`: [{x, y}]（期货曲线）
+* `vix_points`?: [{x, y}]（可选第二轴）
+
+### 4.4 OptionsSnapshot（右中）
+
+* `symbol`: string
+* `iv_curve`: [{k, iv}]
+* `oi_summary`?: object
+* `extra`?: object（占位）
+
+### 4.5 UnusualSnapshot（右下滚动信息窗）
+
+* `symbol`: string
+* `items`: [{ts, symbol, cp, strike, price, size, iv, tag}]
+* 语义：items 必须“最新在前”（push-front）。UI 只做渲染/裁剪，不重排。
+
+### 4.6 LogAppend / LogSnapshot（左下）
+
+* append：{ts, level, source, msg}
+* router 内部维护 ring buffer；在 ViewSnapshot 中返回最近 N 条。
+
+### 4.7 ViewSnapshot（UI poll 返回）
+
+* `market`: MarketSnapshot
+* `curve`: CurveSnapshot?（基于 focus_symbol；无则为空）
+* `options`: OptionsSnapshot?（基于 focus_symbol；无则为空）
+* `unusual`: UnusualSnapshot?（基于 focus_symbol；无则为空）
+* `logs`: {seq, items:[...]}（最近 N 条）
+
+---
+
+## 5. UI 侧排序（与 DataFrame 输出解耦）
+
+* UI 维护 `sort_spec = {sort_by, order}`（仅本地）
+* UI 每次 tick poll `ViewSnapshot` 后：
+
+  * 对 market.rows 在 UI 内排序（推荐：数值列按数值比较，字符串列按字典序）
+  * 列宽策略：固定或平滑自适应（防抖动）
+* sort_spec **不写入 router**；仅 `focus_symbol` 反向传播给 router/worker。
+
+---
+
+## 6. 稳定刷新（flush & stable）验收标准
+
+* 不得出现“旧内容仍在 + 新内容打印在下方”的效果（必须原位刷新）。
+* 列宽稳定：连续刷新中列宽不应频繁变化（使用固定宽或滚动窗口平滑）。
+* 行稳定：排序条件不变时，行应基于 row_key 稳定更新；选中合约保持选中。
+* section 独立更新：market/curve/options/unusual/log 各自依据 `seq` 变化独立刷新。
+* UI redraw 节流：仅在 tick 中触发；单 tick 内聚合 `QueueUpdateDraw`，避免撕裂。
+
+---
+
+## 7. 严格技术栈与轻量化约束（必须遵守）
+
+* **Go**：tcell + tview（不引入更重 UI 框架）。
+* **Python**：仅依赖 pandas + 必要的 JSON-RPC 库（优先 asyncio 生态，避免引入大而全的服务框架）。
+* **IPC/协议**：统一 JSON-RPC 2.0 over TCP（localhost），必须实现消息分帧（推荐 length-prefix 或 NDJSON；但外层仍符合 JSON-RPC 结构）。
+* **无消息队列**：本阶段不引入 Redis/NATS/Kafka 等。
+* **无持久化要求**：router 仅维护内存最新快照 + ring buffer（有上限）。
+* **无高 FPS**：UI 500ms 或 1s tick；禁止用“消息到达立即重绘”的方式。
+* **可观测性**：所有 JSON-RPC 请求/通知必须带 ts/seq/schema_version，router 与 worker 需打印结构化日志（可开关）。
+
+---
+
+## 8. 最小联调里程碑（用于批准/验收）
+
+1. live_md 每 500ms 推 market.snapshot 到 router；router 更新 latest_market。
+2. 至少 1 个 worker 能从 router 拉 latest_market + ui_state，并推送 unusual.snapshot。
+3. Go UI 每 500ms poll ViewSnapshot：
+
+   * 左上 market 表独立刷新
+   * 右下 unusual 信息窗独立刷新（最新在最上）
+   * 切换选中 symbol 后，右侧窗口在后续 tick 切换到对应 symbol 的数据
+4. 所有 section 以 seq diff 的方式更新，界面无追加打印、无明显抖动。
+
+---
+
+## 9. 可行性评估与已确认事项
+
+**可行性评估**
+
+- 方案可行。JSON-RPC + router 作为“最新快照缓存层”，能保证 UI 稳定刷新与多 worker 扩展性。
+- UI 端使用 tick 拉取 + section diff，符合“flush & stable”目标（避免追加输出、减少抖动）。
+
+**已确认事项**
+
+1. **router 进程形态**：内嵌到现有 `starsling` 进程内（goroutine）。
+2. **JSON-RPC 分帧协议**：采用 length-prefix。
+3. **MarketSnapshot size**：采用全量 snapshot（不做 top N/分页）。
+4. **排序职责**：排序仅在 UI 左上行情表本地生效，不写入 router；唯一反向传播的是 `focus_symbol`。
+5. **seq 来源**：由 router 为每个 section 统一递增。
+
+---
+
+## 10. 执行方案（步骤 + checklist）
+
+### 10.1 执行步骤
+
+1. **定义 IPC/Router 基础**
+   - 新增 router 模块（Go）维护 latest snapshots + ring buffer + UI state。
+   - 实现 JSON-RPC server（TCP localhost）。
+   - 选择分帧方案（length-prefix 或 NDJSON）并实现。
+2. **live_md 输出接入 router**
+   - live_md 生成 MarketSnapshot（从 DataFrame 组装）。
+   - 通过 JSON-RPC notification `market.snapshot` 推送 router。
+   - TODO (live_md): 实际 MarketSnapshot 构造逻辑与字段映射由你补充。
+3. **Go UI 侧拉取与渲染**
+   - UI 每 500ms poll `router.get_view_snapshot`。
+   - 按 section seq diff 更新对应区域（市场表/曲线/期权/日志）。
+   - 统一刷新入口，确保原位重绘、固定列宽减少抖动。
+4. **排序交互（仅 UI 本地）**
+   - UI 侧维护 sort_spec（列 + 升/降序）。
+   - UI 内部对 market.rows 排序，仅影响显示。
+5. **联调与验收**
+   - 先只打通 market + logs，确保 UI 刷新稳定。
+   - 再接入 unusual/curve/options（由 worker 模拟或后续补齐）。
+
+### 10.2 Checklist
+
+- [ ] router 提供 JSON-RPC server，支持 market/curve/options/unusual/log 的缓存与 UI state。
+- [ ] live_md 能稳定推送 `market.snapshot`（500ms）。
+- [ ] UI 每 500ms poll view snapshot，market 表格无追加打印、无明显抖动。
+- [ ] 排序切换生效（升/降序），行选中稳定。
+- [ ] 日志与异常处理可见（stale/parse error 不崩溃）。
+
+### 10.3 需要修改/新增的文件（初版）
+
+- **新增**：`internal/router/`（路由缓存 + JSON-RPC server）
+- **新增**：`internal/ipc/`（JSON-RPC client/server 共用工具，可选）
+- **修改**：`internal/live/live_md.py`（推送 market.snapshot）
+- **修改**：`internal/live/process.go`（启动 live_md 时带 router 地址）
+- **修改**：`internal/tui/`（新增 router client + poll 逻辑）
+- **修改**：`cmd/starsling/main.go`（启动 router / 连接 router）
+
+### 10.4 TODO（由你完成的 py_worker 业务逻辑）
+
+- TODO: `py_worker` 中基于 MarketSnapshot 的派生计算逻辑（curve/options/unusual/log）。
+  - 请新建一个worker文件，并完成数据拉取以及结果返送至router的相关代码。中间具体的数据处理逻辑用 TODO 标记，由我具体完成。
+- TODO: `live_md` 中 MarketSnapshot 的字段映射与列定义（DataFrame -> columns/rows/row_key）。
+  - `live_md` line:301  market_snapshot = spi.md()
+  - market_snapshot columns字段：
+      'trading_date' -- pandas Datetime64,
+      'datetime' -- pandas Datetime64, 
+      'ctp_contract' -- string,
+      'last' -- float | last price,
+      'pre_settlement' -- float | previous trading date's settlement price,
+      'pre_close' -- float | previous trading date's close price,
+      'pre_open_interest' -- int | previous trading date's open interest,
+      'open' -- float | opening price,
+      'high' -- float,
+      'low' -- float,
+      'volume' -- int ,
+      'turnover' -- float,
+      'open_interest' -- int ,
+      'close' -- float,
+      'settlement' -- float,
+      'limit_up' -- float,
+      'limit_down' -- float,
+      'bid1' -- float,
+      'ask1' -- float,
+      'bid_vol1' -- int,
+      'ask_vol1' -- int,
+      'average_price' -- float,
+      'exchange' -- string, 
+      'name' -- string, 
+      'product_class' -- string | 商品类别（'1'-期货，'2'-期权，'3'-组合，'8'-股票，'f'-基金,'b'-债券）, 
+      'symbol' -- string, 
+      'multiplier' -- float, 
+      'list_date' -- pandas Datetime64, 
+      'expiry_date' -- pandas Datetime64, 
+      'underlying' -- string, 
+      'option_type' -- string | 期权类型（'1'-认购，'2'-认沽）, 
+      'strike' -- null / float, 
+      'status' -- string |  合约状态（'0'-未上市，'1'-上市，'2'-停牌，'3'-到期/退市）
+  - market_snapshot index 已重置为pure numeric排序，无需处理
