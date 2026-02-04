@@ -11,11 +11,20 @@ type MarketSnapshot struct {
 }
 
 type ViewSnapshot struct {
-	Market MarketSnapshot `json:"market"`
+	Market  MarketSnapshot  `json:"market"`
+	Options OptionsSnapshot `json:"options"`
 }
 
 type UIState struct {
 	FocusSymbol string `json:"focus_symbol"`
+}
+
+type OptionsSnapshot struct {
+	SchemaVersion int              `json:"schema_version"`
+	TS            int64            `json:"ts"`
+	Seq           int64            `json:"seq"`
+	Rows          []map[string]any `json:"rows"`
+	Stale         bool             `json:"stale,omitempty"`
 }
 
 type GetLatestMarketParams struct {

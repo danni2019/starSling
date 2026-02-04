@@ -27,25 +27,64 @@ func TestRouterMarketSnapshotRoundTrip(t *testing.T) {
 		SchemaVersion: 1,
 		TS:            time.Now().UnixMilli(),
 		RowKey:        "ctp_contract",
-		Columns:       []string{"ctp_contract", "last", "volume"},
+		Columns:       []string{"ctp_contract", "product_class", "last", "volume"},
 		Rows: []map[string]any{
-			{"ctp_contract": "cu2604", "last": 104550.0, "volume": 55848},
-			{"ctp_contract": "ag2604", "last": 31490.0, "volume": 1200},
+			{"ctp_contract": "cu2604", "product_class": "1", "last": 104550.0, "volume": 55848},
+			{"ctp_contract": "ag2604C30000", "product_class": "2", "last": 31490.0, "volume": 1200},
 		},
 	}
 	if err := client.Notify(context.Background(), "market.snapshot", payload); err != nil {
 		t.Fatalf("notify market.snapshot: %v", err)
 	}
 
-	var view ViewSnapshot
-	if err := client.Call(context.Background(), "router.get_view_snapshot", GetViewSnapshotParams{}, &view); err != nil {
+	view, err := waitViewSnapshot(client)
+	if err != nil {
 		t.Fatalf("get_view_snapshot: %v", err)
 	}
 	if view.Market.Seq == 0 {
 		t.Fatalf("expected seq > 0")
 	}
-	if len(view.Market.Rows) != 2 {
-		t.Fatalf("expected 2 rows, got %d", len(view.Market.Rows))
+	var latestChanged MarketSnapshot
+	if err := client.Call(context.Background(), "router.get_latest_market", GetLatestMarketParams{MinSeq: 0}, &latestChanged); err != nil {
+		t.Fatalf("get_latest_market changed: %v", err)
+	}
+	if latestChanged.Seq != view.Market.Seq {
+		t.Fatalf("expected latest seq %d, got %d", view.Market.Seq, latestChanged.Seq)
+	}
+	var latestUnchanged map[string]any
+	if err := client.Call(context.Background(), "router.get_latest_market", GetLatestMarketParams{MinSeq: view.Market.Seq}, &latestUnchanged); err != nil {
+		t.Fatalf("get_latest_market unchanged: %v", err)
+	}
+	if unchanged, ok := latestUnchanged["unchanged"].(bool); !ok || !unchanged {
+		t.Fatalf("expected unchanged=true, got %#v", latestUnchanged)
+	}
+	if len(view.Market.Rows) != 1 {
+		t.Fatalf("expected non-option rows in view snapshot, got %d rows", len(view.Market.Rows))
+	}
+	if got := view.Market.Rows[0]["ctp_contract"]; got != "cu2604" {
+		t.Fatalf("unexpected row in view snapshot: %v", got)
+	}
+	if len(latestChanged.Rows) != 2 {
+		t.Fatalf("expected latest market rows to be full set, got %d", len(latestChanged.Rows))
+	}
+
+	optPayload := OptionsSnapshot{
+		SchemaVersion: 1,
+		TS:            time.Now().UnixMilli(),
+		Rows: []map[string]any{
+			{"ctp_contract": "cu2604C72000", "underlying": "cu2604", "symbol": "cu", "strike": 72000.0, "iv": 0.22},
+			{"ctp_contract": "ag2604C30000", "underlying": "ag2604", "symbol": "ag", "strike": 30000.0, "iv": 0.30},
+		},
+	}
+	if err := client.Notify(context.Background(), "options.snapshot", optPayload); err != nil {
+		t.Fatalf("notify options.snapshot: %v", err)
+	}
+	var filtered ViewSnapshot
+	if err := client.Call(context.Background(), "router.get_view_snapshot", GetViewSnapshotParams{FocusSymbol: "cu2604"}, &filtered); err != nil {
+		t.Fatalf("get_view_snapshot with focus: %v", err)
+	}
+	if len(filtered.Options.Rows) != 1 {
+		t.Fatalf("expected 1 option row for focus, got %d", len(filtered.Options.Rows))
 	}
 
 	if err := client.Call(context.Background(), "ui.set_focus_symbol", SetFocusSymbolParams{Symbol: "cu2604"}, nil); err != nil {
@@ -57,6 +96,24 @@ func TestRouterMarketSnapshotRoundTrip(t *testing.T) {
 	}
 	if uiState.FocusSymbol != "cu2604" {
 		t.Fatalf("unexpected focus symbol: %q", uiState.FocusSymbol)
+	}
+}
+
+func waitViewSnapshot(client *ipc.Client) (ViewSnapshot, error) {
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		var view ViewSnapshot
+		err := client.Call(context.Background(), "router.get_view_snapshot", GetViewSnapshotParams{}, &view)
+		if err == nil && view.Market.Seq > 0 {
+			return view, nil
+		}
+		if time.Now().After(deadline) {
+			if err != nil {
+				return ViewSnapshot{}, err
+			}
+			return view, nil
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

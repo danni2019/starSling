@@ -111,7 +111,7 @@ func RuntimePlatform() string {
 	return ""
 }
 
-func writeTempScript() (string, func(), error) {
+func writeTempScript(scriptName string, content []byte) (string, func(), error) {
 	tempDir, err := os.MkdirTemp("", "starsling-live-")
 	if err != nil {
 		return "", nil, fmt.Errorf("create temp dir: %w", err)
@@ -120,8 +120,11 @@ func writeTempScript() (string, func(), error) {
 		_ = os.RemoveAll(tempDir)
 	}
 
-	scriptPath := filepath.Join(tempDir, "live_md.py")
-	if err := os.WriteFile(scriptPath, liveScript, 0o700); err != nil {
+	if strings.TrimSpace(scriptName) == "" {
+		scriptName = "script.py"
+	}
+	scriptPath := filepath.Join(tempDir, scriptName)
+	if err := os.WriteFile(scriptPath, content, 0o700); err != nil {
 		cleanup()
 		return "", nil, fmt.Errorf("write script: %w", err)
 	}

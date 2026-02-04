@@ -1,6 +1,7 @@
 package live
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -47,7 +48,7 @@ func start(ctx context.Context, cfg config.LiveMDConfig, pythonPath string, rout
 		return nil, err
 	}
 
-	scriptPath, cleanup, err := writeTempScript()
+	scriptPath, cleanup, err := writeTempScript("live_md.py", liveScript)
 	if err != nil {
 		return nil, err
 	}
@@ -64,7 +65,8 @@ func start(ctx context.Context, cfg config.LiveMDConfig, pythonPath string, rout
 		stderr = io.Discard
 	}
 	cmd.Stdout = stdout
-	cmd.Stderr = stderr
+	stderrCapture := &bytes.Buffer{}
+	cmd.Stderr = io.MultiWriter(stderr, stderrCapture)
 
 	if err := cmd.Start(); err != nil {
 		cleanup()
@@ -81,6 +83,12 @@ func start(ctx context.Context, cfg config.LiveMDConfig, pythonPath string, rout
 
 	go func() {
 		err := cmd.Wait()
+		if err != nil {
+			tail := tailText(stderrCapture.String(), 320)
+			if tail != "" {
+				err = fmt.Errorf("%w: %s", err, tail)
+			}
+		}
 		proc.setExit(err)
 		proc.cleanup()
 		proc.exitCh <- err
@@ -88,6 +96,17 @@ func start(ctx context.Context, cfg config.LiveMDConfig, pythonPath string, rout
 	}()
 
 	return proc, nil
+}
+
+func tailText(value string, max int) string {
+	trimmed := bytes.TrimSpace([]byte(value))
+	if len(trimmed) == 0 {
+		return ""
+	}
+	if max > 0 && len(trimmed) > max {
+		trimmed = trimmed[len(trimmed)-max:]
+	}
+	return string(trimmed)
 }
 
 func (p *Process) Exit() <-chan error {

@@ -168,6 +168,13 @@ func (s *Server) handleNotification(msg ipc.Message) {
 			return
 		}
 		s.state.UpdateMarket(snapshot)
+	case "options.snapshot":
+		var snapshot OptionsSnapshot
+		if err := json.Unmarshal(msg.Params, &snapshot); err != nil {
+			s.logger.Warn("options.snapshot decode failed", "error", err)
+			return
+		}
+		s.state.UpdateOptions(snapshot)
 	default:
 		s.logger.Debug("ignore unknown notification", "method", msg.Method)
 	}

@@ -318,13 +318,13 @@
 
 ### 10.2 Checklist
 
-- [ ] router 提供 JSON-RPC server，支持 market/curve/options/unusual/log 的缓存与 UI state。
-- [ ] live_md 能稳定推送 `market.snapshot`（500ms）。
-- [ ] live_md 输出满足序列化规则（datetime ISO8601+08:00，NaN/Inf 已转 null）。
-- [ ] UI 每 500ms poll view snapshot，market 表格无追加打印、无明显抖动。
-- [ ] 排序切换生效（升/降序），行选中稳定。
-- [ ] 默认排序为 `volume desc`，且稳定排序次键为 `ctp_contract`。
-- [ ] 日志与异常处理可见（stale/parse error 不崩溃）。
+- [x] router 提供 JSON-RPC server，支持 market/curve/options/unusual/log 的缓存与 UI state（Batch-1 已完成 market + ui_state，其他 section 结构已预留）。
+- [x] live_md 能稳定推送 `market.snapshot`（500ms）。
+- [x] live_md 输出满足序列化规则（datetime ISO8601+08:00，NaN/Inf 已转 null）。
+- [x] UI 每 500ms poll view snapshot，market 表格无追加打印、无明显抖动。
+- [x] 排序切换生效（升/降序），行选中稳定。
+- [x] 默认排序为 `volume desc`，且稳定排序次键为 `ctp_contract`。
+- [x] 日志与异常处理可见（stale/parse error 不崩溃，已接入 live log 面板）。
 - [ ] 断线重连/backoff 与 timeout(2s) 行为已联调通过。
 
 ### 10.3 需要修改/新增的文件（初版）
@@ -377,6 +377,18 @@
       'strike' -- null / float, 
       'status' -- string |  合约状态（'0'-未上市，'1'-上市，'2'-停牌，'3'-到期/退市）
   - market_snapshot index 已重置为pure numeric排序，无需处理。如后续需要index信息，则根据需求，重设为 ctp_contract 或其他字段
+- TODO: 期权 Greeks 计算参数中的 `risk_free_rate` 当前固定为 `0.01`；
+  - 后续在 main UI 新增“通用配置入口”，将该参数与其他运行参数统一暴露给用户，并支持持久化保存。
+
+---
+
+## 10.5 Batch-1 完成状态（已落地）
+
+- 已打通最小闭环：`live_md -> router -> tui(left-top market)`。
+- 已完成内嵌 router 生命周期管理（main 启动/停止）。
+- 已完成 UI 侧 `ui.set_focus_symbol` 回写 router（供后续 worker 使用）。
+- 已新增 `py_worker_template.py`，用于后续 Batch-2 业务接入（TODO 占位）。
+- 当前未完成项：worker 实际计算链路、右侧 sections（curve/options/unusual/log）真实数据联动、断线重连 backoff 联调。
 
 ---
 
@@ -406,3 +418,32 @@
 2. live_md 推送后，左上 market 表可持续刷新且无追加打印。
 3. 断开 live_md 或 router 后，UI 显示 stale/断线状态并自动重连。
 4. 恢复连接后，数据继续刷新，排序与选中状态不丢失。
+
+---
+
+## 12. Batch-2 准备计划（Ready）
+
+### 12.1 目标
+
+1. 打通 `py_worker -> router -> tui` 的右侧 sections（curve/options/unusual）与左下 logs。
+2. 完成 worker 拉取 market + focus_symbol，并推送派生结果。
+3. 完成断线重连/backoff 联调与稳定性验收。
+
+### 12.2 执行步骤
+
+1. 在 `python/py_worker_template.py` 基础上实现 JSON-RPC client 循环（拉取 market/ui_state，推送派生 snapshots）。  
+   - 具体计算逻辑继续由你完成（保留 TODO）。
+2. 扩展 router notification 处理：`curve.snapshot`、`options.snapshot`、`unusual.snapshot`、`log.append`。
+3. 扩展 `router.get_view_snapshot`：按 `focus_symbol` 返回右侧 sections + logs。
+4. TUI 按 section `seq` 做 diff 渲染，确保仅更新变化 section。
+5. 完成断线重连与 stale 标记联调（worker/router/live_md 三端）。
+
+### 12.3 Batch-2 Checklist
+
+- [ ] worker 能稳定拉取 `router.get_latest_market` 与 `router.get_ui_state`。
+- [ ] worker 能推送 `curve/options/unusual/log` 四类 notification。
+- [x] router 已支持接收并缓存 `options.snapshot`，并按 `focus_symbol` 返回 options 快照。
+- [x] UI 右中 options section 已按 seq diff 刷新（IV/Volume 文本图 + 明细预览）。
+- [x] UI 左上 market 已支持 Enter 弹窗进行筛选/排序（exchange/product_class/symbol + sort_by/order）。
+- [ ] 左下 logs 与右上/右下 section 的真实 worker 数据链路仍待接入。
+- [ ] 断线重连/backoff 与 stale 行为通过 E2E smoke。

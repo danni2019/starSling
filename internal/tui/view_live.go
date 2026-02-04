@@ -92,6 +92,7 @@ func (ui *UI) buildLiveScreen() tview.Primitive {
 	for _, line := range ui.data.Logs {
 		ui.appendLiveLogLine(line.Message)
 	}
+	ui.liveOpts.SetText("Waiting for options snapshot...")
 
 	return root
 }

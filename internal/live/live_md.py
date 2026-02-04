@@ -172,10 +172,42 @@ class MdSpi(mdapi.CThostFtdcMdSpi):
     def __contract_meta__(self):
         contract_meta_data = load_metadata_payload("contract")
         if contract_meta_data is None:
-            raise ValueError(f"Missing Critical Metadata: Contract Meta Not Found.")
+            log("contract metadata missing; continue with empty contract meta")
+            return pd.DataFrame(
+                columns=[
+                    "exchange",
+                    "ctp_contract",
+                    "name",
+                    "product_class",
+                    "symbol",
+                    "multiplier",
+                    "list_date",
+                    "expiry_date",
+                    "underlying",
+                    "option_type",
+                    "strike",
+                    "status",
+                ]
+            ).set_index("ctp_contract", drop=True)
         contract_data = contract_meta_data.get("data", None)
         if contract_data is None or (isinstance(contract_data, list) and len(contract_data) == 0):
-            raise ValueError(f"Missing Critical Metadata: Contract Meta Not Found.")
+            log("contract metadata payload empty; continue with empty contract meta")
+            return pd.DataFrame(
+                columns=[
+                    "exchange",
+                    "ctp_contract",
+                    "name",
+                    "product_class",
+                    "symbol",
+                    "multiplier",
+                    "list_date",
+                    "expiry_date",
+                    "underlying",
+                    "option_type",
+                    "strike",
+                    "status",
+                ]
+            ).set_index("ctp_contract", drop=True)
         df = pd.DataFrame(contract_data)
         df = df[[
             'ExchangeID', 'InstrumentID', 'InstrumentName', 'ProductClass', 'ProductID', 'VolumeMultiple', 
@@ -428,8 +460,6 @@ def main() -> int:
             if market_df.empty:
                 continue
             market_snapshot = build_market_snapshot(market_df)
-            if len(market_snapshot.get("rows", [])) == 0:
-                continue
             publish_notification(router_target, "market.snapshot", market_snapshot)
         except Exception as exc:
             log(f"build/push market snapshot failed: {exc}")

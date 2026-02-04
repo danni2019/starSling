@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -81,16 +82,25 @@ type UI struct {
 
 	liveProc   *live.Process
 	liveCancel context.CancelFunc
+	optsProc   *live.Process
+	optsCancel context.CancelFunc
 
-	lastMarketSeq   int64
-	lastMarketStale bool
-	marketSortBy    string
-	marketSortAsc   bool
-	marketRows      []MarketRow
-	liveLogLines    []string
-	logoTitleWidth  int
-	logoFrame       int
-	lastWidth       int
+	lastMarketSeq    int64
+	lastMarketStale  bool
+	marketSortBy     string
+	marketSortAsc    bool
+	marketRawRows    []map[string]any
+	marketRows       []MarketRow
+	filterExchange   string
+	filterClass      string
+	filterSymbol     string
+	lastOptionsSeq   int64
+	lastOptionsStale bool
+	lastOptionsKey   string
+	liveLogLines     []string
+	logoTitleWidth   int
+	logoFrame        int
+	lastWidth        int
 }
 
 func newUI(routerAddr string, logger *slog.Logger) *UI {
@@ -156,7 +166,7 @@ func (ui *UI) bindKeys() {
 				return nil
 			}
 		case screenDrilldown:
-			if event.Key() == tcell.KeyEsc || event.Key() == tcell.KeyEnter {
+			if event.Key() == tcell.KeyEsc {
 				ui.closeDrilldown()
 				return nil
 			}
@@ -178,7 +188,11 @@ func (ui *UI) handleLiveKeys(event *tcell.EventKey) *tcell.EventKey {
 		ui.cycleFocus(-1)
 		return nil
 	case tcell.KeyEnter:
-		ui.openDrilldown()
+		if ui.app.GetFocus() == ui.liveMarket {
+			ui.openMarketFilter()
+		} else {
+			ui.openDrilldown()
+		}
 		return nil
 	case tcell.KeyRune:
 		if event.Rune() == 's' || event.Rune() == 'S' {
@@ -227,6 +241,94 @@ func (ui *UI) setFocus(index int) {
 		setBorderColor(item, color)
 	}
 	ui.app.SetFocus(ui.focusables[index])
+}
+
+func (ui *UI) openMarketFilter() {
+	ui.setCurrentScreen(screenDrilldown)
+	exchangeInput := tview.NewInputField().SetLabel("Exchange: ").SetText(ui.filterExchange)
+	classInput := tview.NewInputField().SetLabel("Product Class: ").SetText(ui.filterClass)
+	symbolInput := tview.NewInputField().SetLabel("Symbol: ").SetText(ui.filterSymbol)
+	sortOptions := marketNumericColumns(ui.marketRawRows)
+	if len(sortOptions) == 0 {
+		sortOptions = []string{"volume"}
+	}
+	sortIdx := indexOfFold(sortOptions, ui.marketSortBy)
+	if sortIdx < 0 {
+		sortIdx = indexOfFold(sortOptions, "volume")
+		if sortIdx < 0 {
+			sortIdx = 0
+		}
+	}
+	selectedSortBy := sortOptions[sortIdx]
+
+	orderOptions := []string{"desc", "asc"}
+	orderIdx := indexOfFold(orderOptions, ui.sortDirection())
+	if orderIdx < 0 {
+		orderIdx = 0
+	}
+	selectedOrder := orderOptions[orderIdx]
+
+	sortDropDown := tview.NewDropDown().
+		SetLabel("Sort By: ").
+		SetOptions(sortOptions, func(text string, _ int) {
+			if strings.TrimSpace(text) != "" {
+				selectedSortBy = text
+			}
+		})
+	sortDropDown.SetCurrentOption(sortIdx)
+
+	orderDropDown := tview.NewDropDown().
+		SetLabel("Order: ").
+		SetOptions(orderOptions, func(text string, _ int) {
+			if strings.TrimSpace(text) != "" {
+				selectedOrder = text
+			}
+		})
+	orderDropDown.SetCurrentOption(orderIdx)
+
+	form := tview.NewForm().
+		AddFormItem(exchangeInput).
+		AddFormItem(classInput).
+		AddFormItem(symbolInput).
+		AddFormItem(sortDropDown).
+		AddFormItem(orderDropDown)
+	form.SetBorder(true).SetTitle("Market filter & sort")
+	form.SetBorderColor(colorBorder).SetTitleColor(colorBorder)
+	form.SetBackgroundColor(colorBackground)
+	form.SetFieldBackgroundColor(colorBackground)
+	form.SetFieldTextColor(colorTableRow)
+	form.SetButtonBackgroundColor(colorHighlight)
+	form.SetButtonTextColor(colorMenuSelected)
+
+	form.AddButton("Apply", func() {
+		ui.filterExchange = strings.TrimSpace(exchangeInput.GetText())
+		ui.filterClass = strings.TrimSpace(classInput.GetText())
+		ui.filterSymbol = strings.TrimSpace(symbolInput.GetText())
+		sortBy := strings.TrimSpace(strings.ToLower(selectedSortBy))
+		if sortBy == "" {
+			sortBy = "volume"
+		}
+		ui.marketSortBy = sortBy
+		order := strings.TrimSpace(strings.ToLower(selectedOrder))
+		ui.marketSortAsc = order == "asc"
+		ui.renderMarketRows()
+		ui.closeDrilldown()
+	})
+	form.AddButton("Reset", func() {
+		ui.filterExchange = ""
+		ui.filterClass = ""
+		ui.filterSymbol = ""
+		ui.marketSortBy = "volume"
+		ui.marketSortAsc = false
+		ui.renderMarketRows()
+		ui.closeDrilldown()
+	})
+	form.AddButton("Cancel", func() {
+		ui.closeDrilldown()
+	})
+
+	ui.pages.AddPage(string(screenDrilldown), centerModal(form, 68, 15), true, true)
+	ui.app.SetFocus(form)
 }
 
 func (ui *UI) openDrilldown() {
@@ -292,6 +394,7 @@ func (ui *UI) pollLiveSnapshot() {
 			return
 		}
 		ui.applyMarketSnapshot(view.Market)
+		ui.applyOptionsSnapshot(view.Options)
 	})
 }
 
@@ -302,6 +405,7 @@ func (ui *UI) applyMarketSnapshot(snapshot router.MarketSnapshot) {
 		if !shouldClear {
 			return
 		}
+		ui.marketRawRows = nil
 		ui.marketRows = nil
 		ui.lastMarketSeq = 0
 		ui.lastMarketStale = false
@@ -314,7 +418,10 @@ func (ui *UI) applyMarketSnapshot(snapshot router.MarketSnapshot) {
 		return
 	}
 	if seqChanged {
-		ui.marketRows = convertMarketRows(snapshot.Rows)
+		ui.marketRawRows = snapshot.Rows
+		if ui.marketRawRows == nil {
+			ui.marketRawRows = []map[string]any{}
+		}
 		ui.renderMarketRows()
 		ui.lastMarketSeq = snapshot.Seq
 	}
@@ -327,13 +434,50 @@ func (ui *UI) applyMarketSnapshot(snapshot router.MarketSnapshot) {
 	ui.lastMarketStale = snapshot.Stale
 }
 
+func (ui *UI) applyOptionsSnapshot(snapshot router.OptionsSnapshot) {
+	if ui.liveOpts == nil {
+		return
+	}
+	if snapshot.Seq == 0 {
+		if ui.lastOptionsSeq != 0 {
+			ui.liveOpts.SetText("No options snapshot.")
+			ui.lastOptionsSeq = 0
+			ui.lastOptionsStale = false
+			ui.lastOptionsKey = ""
+		}
+		return
+	}
+	optionsKey := optionsRowsKey(snapshot.Rows)
+	seqChanged := snapshot.Seq != ui.lastOptionsSeq
+	staleChanged := snapshot.Stale != ui.lastOptionsStale
+	keyChanged := optionsKey != ui.lastOptionsKey
+	if !seqChanged && !staleChanged && !keyChanged {
+		return
+	}
+	if seqChanged || keyChanged {
+		ui.liveOpts.SetText(renderOptionsPanel(snapshot.Rows))
+		ui.lastOptionsSeq = snapshot.Seq
+		ui.lastOptionsKey = optionsKey
+	}
+	if staleChanged && snapshot.Stale {
+		ui.appendLiveLogLine("options snapshot stale")
+	}
+	ui.lastOptionsStale = snapshot.Stale
+}
+
 func (ui *UI) renderMarketRows() {
 	if ui.liveMarket == nil {
 		return
 	}
 	selectedSymbol := ui.selectedMarketSymbol()
 	selectedRow, _ := ui.liveMarket.GetSelection()
-	sortMarketRows(ui.marketRows, ui.marketSortBy, ui.marketSortAsc)
+	if ui.marketRawRows != nil {
+		filtered := filterMarketRows(ui.marketRawRows, ui.filterExchange, ui.filterClass, ui.filterSymbol)
+		sortMarketRawRows(filtered, ui.marketSortBy, ui.marketSortAsc)
+		ui.marketRows = convertMarketRows(filtered)
+	} else {
+		sortMarketRows(ui.marketRows, ui.marketSortBy, ui.marketSortAsc)
+	}
 	fillMarketTable(ui.liveMarket, ui.marketRows)
 	ui.restoreMarketSelection(selectedSymbol, selectedRow)
 }
@@ -383,6 +527,255 @@ func marketRowForSymbol(rows []MarketRow, symbol string) int {
 		}
 	}
 	return 0
+}
+
+func filterMarketRows(rows []map[string]any, exchange, productClass, symbol string) []map[string]any {
+	exchangeTokens := csvTokens(exchange)
+	classTokens := csvTokens(productClass)
+	symbolTokens := csvTokens(symbol)
+	if len(exchangeTokens) == 0 && len(classTokens) == 0 && len(symbolTokens) == 0 {
+		return rows
+	}
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		rowExchange := strings.TrimSpace(asString(row["exchange"]))
+		rowClass := strings.TrimSpace(asString(row["product_class"]))
+		rowSymbol := strings.TrimSpace(asString(row["symbol"]))
+		if !tokenMatch(exchangeTokens, rowExchange) {
+			continue
+		}
+		if !tokenMatch(classTokens, rowClass) {
+			continue
+		}
+		if !tokenMatch(symbolTokens, rowSymbol) {
+			continue
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
+func csvTokens(value string) map[string]struct{} {
+	tokens := make(map[string]struct{})
+	for _, raw := range strings.Split(value, ",") {
+		token := strings.ToLower(strings.TrimSpace(raw))
+		if token == "" {
+			continue
+		}
+		tokens[token] = struct{}{}
+	}
+	return tokens
+}
+
+func tokenMatch(tokens map[string]struct{}, value string) bool {
+	if len(tokens) == 0 {
+		return true
+	}
+	_, ok := tokens[strings.ToLower(strings.TrimSpace(value))]
+	return ok
+}
+
+func indexOfFold(items []string, target string) int {
+	for idx, item := range items {
+		if strings.EqualFold(strings.TrimSpace(item), strings.TrimSpace(target)) {
+			return idx
+		}
+	}
+	return -1
+}
+
+func marketNumericColumns(rows []map[string]any) []string {
+	if len(rows) == 0 {
+		return nil
+	}
+	columnSet := make(map[string]struct{})
+	for _, row := range rows {
+		for key, value := range row {
+			key = strings.TrimSpace(key)
+			if key == "" {
+				continue
+			}
+			if _, ok := asOptionalFloat(value); ok {
+				columnSet[strings.ToLower(key)] = struct{}{}
+			}
+		}
+	}
+	columns := make([]string, 0, len(columnSet))
+	for key := range columnSet {
+		columns = append(columns, key)
+	}
+	sort.Strings(columns)
+	return columns
+}
+
+func sortMarketRawRows(rows []map[string]any, sortBy string, asc bool) {
+	key := strings.TrimSpace(sortBy)
+	if key == "" {
+		key = "volume"
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		left := rows[i]
+		right := rows[j]
+		leftRaw := left[key]
+		rightRaw := right[key]
+
+		lf, lok := asOptionalFloat(leftRaw)
+		rf, rok := asOptionalFloat(rightRaw)
+		if lok != rok {
+			return lok
+		}
+		if lok && rok {
+			if lf == rf {
+				return strings.ToLower(asString(left["ctp_contract"])) < strings.ToLower(asString(right["ctp_contract"]))
+			}
+			if asc {
+				return lf < rf
+			}
+			return lf > rf
+		}
+
+		ls := strings.ToLower(strings.TrimSpace(asString(leftRaw)))
+		rs := strings.ToLower(strings.TrimSpace(asString(rightRaw)))
+		if ls == rs {
+			return strings.ToLower(asString(left["ctp_contract"])) < strings.ToLower(asString(right["ctp_contract"]))
+		}
+		if asc {
+			return ls < rs
+		}
+		return ls > rs
+	})
+}
+
+type optionPoint struct {
+	Contract   string
+	Underlying string
+	Strike     float64
+	IV         float64
+	Volume     float64
+}
+
+func renderOptionsPanel(rows []map[string]any) string {
+	if len(rows) == 0 {
+		return "No options data for current focus."
+	}
+	points := make([]optionPoint, 0, len(rows))
+	for _, row := range rows {
+		strike, strikeOK := asOptionalFloat(row["strike"])
+		iv, ivOK := asOptionalFloat(row["iv"])
+		vol, volOK := asOptionalFloat(row["volume"])
+		contract := strings.TrimSpace(asString(row["ctp_contract"]))
+		if contract == "" || !strikeOK || !ivOK || math.IsNaN(iv) || math.IsInf(iv, 0) {
+			continue
+		}
+		point := optionPoint{
+			Contract:   contract,
+			Underlying: strings.TrimSpace(asString(row["underlying"])),
+			Strike:     strike,
+			IV:         iv,
+			Volume:     0,
+		}
+		if volOK && !math.IsNaN(vol) && !math.IsInf(vol, 0) {
+			point.Volume = vol
+		}
+		points = append(points, point)
+	}
+	if len(points) == 0 {
+		return "No valid option points."
+	}
+	sort.Slice(points, func(i, j int) bool { return points[i].Strike < points[j].Strike })
+	if len(points) > 24 {
+		points = points[:24]
+	}
+
+	minIV, maxIV := minMax(func(p optionPoint) float64 { return p.IV }, points)
+	minVol, maxVol := minMax(func(p optionPoint) float64 { return p.Volume }, points)
+	ivLine := make([]string, 0, len(points))
+	volLine := make([]string, 0, len(points))
+	strikeLine := make([]string, 0, len(points))
+	for _, p := range points {
+		ivLine = append(ivLine, levelGlyph(normalize(p.IV, minIV, maxIV)))
+		volLine = append(volLine, levelGlyph(normalize(p.Volume, minVol, maxVol)))
+		strikeLine = append(strikeLine, shortStrike(p.Strike))
+	}
+
+	lines := []string{
+		fmt.Sprintf("Options points: %d", len(points)),
+		"IV curve (strike asc):  " + strings.Join(ivLine, ""),
+		"VOL bars  (strike asc): " + strings.Join(volLine, ""),
+		"Strikes: " + strings.Join(strikeLine, " "),
+		"",
+		"K        IV       VOL      CONTRACT",
+	}
+	limitRows := len(points)
+	if limitRows > 8 {
+		limitRows = 8
+	}
+	for i := 0; i < limitRows; i++ {
+		p := points[i]
+		lines = append(lines, fmt.Sprintf("%-8s %-8s %-8s %s",
+			formatFloat(p.Strike),
+			formatFloat(p.IV),
+			formatFloat(p.Volume),
+			p.Contract,
+		))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func minMax(fn func(optionPoint) float64, values []optionPoint) (float64, float64) {
+	if len(values) == 0 {
+		return 0, 0
+	}
+	minVal := fn(values[0])
+	maxVal := minVal
+	for _, v := range values[1:] {
+		val := fn(v)
+		if val < minVal {
+			minVal = val
+		}
+		if val > maxVal {
+			maxVal = val
+		}
+	}
+	return minVal, maxVal
+}
+
+func normalize(value, minVal, maxVal float64) float64 {
+	if maxVal <= minVal {
+		return 0
+	}
+	return (value - minVal) / (maxVal - minVal)
+}
+
+func levelGlyph(level float64) string {
+	levels := []string{".", ":", "-", "=", "+", "*", "#", "@"}
+	if level <= 0 {
+		return levels[0]
+	}
+	if level >= 1 {
+		return levels[len(levels)-1]
+	}
+	idx := int(level * float64(len(levels)-1))
+	return levels[idx]
+}
+
+func shortStrike(value float64) string {
+	raw := formatFloat(value)
+	if len(raw) <= 4 {
+		return raw
+	}
+	return raw[len(raw)-4:]
+}
+
+func optionsRowsKey(rows []map[string]any) string {
+	if len(rows) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(rows))
+	for _, row := range rows {
+		parts = append(parts, strings.ToLower(strings.TrimSpace(asString(row["ctp_contract"]))))
+	}
+	return strings.Join(parts, "|")
 }
 
 func convertMarketRows(raw []map[string]any) []MarketRow {
@@ -587,6 +980,7 @@ func (ui *UI) sortDirection() string {
 
 func (ui *UI) startLiveProcessIfNeeded() {
 	if ui.liveProc != nil && !ui.liveProc.Done() {
+		ui.startOptionsWorkerIfNeeded()
 		return
 	}
 	if strings.TrimSpace(ui.routerAddr) == "" {
@@ -613,6 +1007,7 @@ func (ui *UI) startLiveProcessIfNeeded() {
 	ui.liveCancel = cancel
 	ui.liveProc = proc
 	ui.appendLiveLogLine(fmt.Sprintf("live md started on %s:%d", cfg.LiveMD.Host, cfg.LiveMD.Port))
+	ui.startOptionsWorkerIfNeeded()
 
 	go func(startedProc *live.Process) {
 		err := <-startedProc.Exit()
@@ -626,6 +1021,7 @@ func (ui *UI) startLiveProcessIfNeeded() {
 				ui.liveProc = nil
 				ui.liveCancel = nil
 			}
+			ui.stopOptionsWorker()
 		})
 	}(proc)
 }
@@ -638,6 +1034,53 @@ func (ui *UI) stopLiveProcess() {
 	if ui.liveProc != nil {
 		ui.liveProc.Stop()
 		ui.liveProc = nil
+	}
+	ui.stopOptionsWorker()
+}
+
+func (ui *UI) startOptionsWorkerIfNeeded() {
+	if ui.optsProc != nil && !ui.optsProc.Done() {
+		return
+	}
+	if strings.TrimSpace(ui.routerAddr) == "" {
+		ui.appendLiveLogLine("options worker skipped: router addr missing")
+		return
+	}
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+	proc, err := live.StartOptionsWorkerDetached(workerCtx, "", ui.routerAddr, ui.logger)
+	if err != nil {
+		workerCancel()
+		ui.appendLiveLogLine("start options worker failed: " + err.Error())
+		return
+	}
+	ui.optsCancel = workerCancel
+	ui.optsProc = proc
+	ui.appendLiveLogLine("options worker started")
+
+	go func(startedProc *live.Process) {
+		err := <-startedProc.Exit()
+		ui.app.QueueUpdateDraw(func() {
+			if err != nil {
+				ui.appendLiveLogLine("options worker exited: " + err.Error())
+			} else {
+				ui.appendLiveLogLine("options worker exited")
+			}
+			if ui.optsProc == startedProc {
+				ui.optsProc = nil
+				ui.optsCancel = nil
+			}
+		})
+	}(proc)
+}
+
+func (ui *UI) stopOptionsWorker() {
+	if ui.optsCancel != nil {
+		ui.optsCancel()
+		ui.optsCancel = nil
+	}
+	if ui.optsProc != nil {
+		ui.optsProc.Stop()
+		ui.optsProc = nil
 	}
 }
 
@@ -680,4 +1123,17 @@ func setBorderColor(item tview.Primitive, color tcell.Color) {
 	}); ok {
 		setter.SetTitleColor(color)
 	}
+}
+
+func centerModal(p tview.Primitive, width, height int) tview.Primitive {
+	return tview.NewFlex().
+		AddItem(nil, 0, 1, false).
+		AddItem(
+			tview.NewFlex().SetDirection(tview.FlexRow).
+				AddItem(nil, 0, 1, false).
+				AddItem(p, height, 1, true).
+				AddItem(nil, 0, 1, false),
+			width, 1, true,
+		).
+		AddItem(nil, 0, 1, false)
 }
