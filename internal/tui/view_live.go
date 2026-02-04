@@ -1,11 +1,15 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
+
+	"github.com/danni2019/starSling/internal/router"
 )
 
 func (ui *UI) buildLiveScreen() tview.Primitive {
@@ -15,6 +19,24 @@ func (ui *UI) buildLiveScreen() tview.Primitive {
 	ui.liveMarket.SetSelectedStyle(tcell.StyleDefault.Foreground(colorMenuSelected).Background(colorHighlight))
 	ui.liveMarket.SetBorder(true).SetTitle("Market (select a contract)")
 	ui.liveMarket.SetBorderColor(colorBorder).SetTitleColor(colorBorder)
+	ui.liveMarket.SetSelectionChangedFunc(func(row int, _ int) {
+		if row <= 0 || ui.rpcClient == nil {
+			return
+		}
+		cell := ui.liveMarket.GetCell(row, 0)
+		if cell == nil {
+			return
+		}
+		symbol := strings.TrimSpace(cell.Text)
+		if symbol == "" {
+			return
+		}
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_ = ui.rpcClient.Call(ctx, "ui.set_focus_symbol", router.SetFocusSymbolParams{Symbol: symbol}, nil)
+		}()
+	})
 
 	ui.liveLog = tview.NewTextView()
 	ui.liveLog.SetDynamicColors(false)
@@ -67,6 +89,9 @@ func (ui *UI) buildLiveScreen() tview.Primitive {
 	}
 	ui.focusIndex = 0
 	ui.updateLiveData()
+	for _, line := range ui.data.Logs {
+		ui.appendLiveLogLine(line.Message)
+	}
 
 	return root
 }

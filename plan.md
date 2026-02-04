@@ -21,7 +21,7 @@
 
   * 维护最新快照缓存（market/curve/options/unusual/log）
   * 提供 JSON-RPC server：UI/worker 拉取最新数据；接收 live_md/worker 推送结果
-  * 维护 UI 的控制状态（focus_symbol、sort_spec 等）
+  * 维护 UI 的共享控制状态（仅 `focus_symbol`）
 * `live_md`（Python）：
 
   * 从行情源（未来 CTP）生成 `MarketSnapshot`（500ms）
@@ -53,7 +53,7 @@
 
   1. 调用 `GetLatestMarket()` 获取最新 market（带 `seq/ts`）
   2. 如与上次处理的 `seq` 相同，则 sleep（避免重复算）
-  3. 读取 `GetUIState()`（至少含 `focus_symbol`；也可含 sort_spec 等）
+  3. 读取 `GetUIState()`（至少含 `focus_symbol`）
   4. 进行派生计算（允许耗时；不追赶旧数据）
   5. 通过 notification `curve.snapshot/options.snapshot/unusual.snapshot/log.append` 推送 router
 * router 行为：
@@ -75,6 +75,40 @@
   * 列宽稳定（固定宽或平滑自适应）
   * 选中行稳定（基于 row_key）
   * section 更新原子化：一次 tick 内对每个 section 的更新使用 `QueueUpdateDraw` 聚合执行
+
+### 2.4 启动与关闭时序（已定版）
+
+* 启动顺序（同进程内）：
+
+  1. `router` goroutine 启动并监听 localhost 端口
+  2. `tui` 启动主循环（先显示 UI，market 区可为空）
+  3. `live_md` 子进程启动并开始推送 `market.snapshot`
+  4. `py_worker_*` 启动并进入 `get_latest_market -> compute -> push` 循环
+* 关闭顺序（反向）：
+
+  1. 先停止 `tui` poll tick
+  2. 再停止 `py_worker_*`
+  3. 再停止 `live_md`
+  4. 最后关闭 `router` listener 与内部 goroutine
+
+### 2.5 故障与降级策略
+
+* router 不可达（UI/worker/live_md 任一端）：
+
+  * 指数退避重连：`0.5s -> 1s -> 2s -> 4s`，上限 `5s`
+  * 不退出主程序；UI 显示 `router disconnected` 状态
+* live_md 推送中断：
+
+  * router 保留最后一帧 `market`，并在 `ViewSnapshot.market` 标记 `stale=true`
+  * UI 保持最后画面，不清空表格
+* worker 推送中断：
+
+  * 对应 section 保留最后一帧并标记 `stale=true`
+  * 不影响 market 主链路
+* 超时约束：
+
+  * JSON-RPC request 默认 timeout `2s`
+  * 连续 `N=3` 次 timeout 后在日志中升级为 warn（带 endpoint/method）
 
 ---
 
@@ -117,8 +151,8 @@
 ### 4.1 公共字段
 
 * `schema_version`: int
-* `ts`: int64（毫秒或纳秒，统一即可）
-* `seq`: int64（router 或 source 单调递增；每类快照单独递增也可）
+* `ts`: int64（**固定为毫秒级 epoch**）
+* `seq`: int64（**由 router 为每个 section 统一单调递增**）
 
 ### 4.2 MarketSnapshot（用于左上行情表）
 
@@ -158,6 +192,24 @@
 * `unusual`: UnusualSnapshot?（基于 focus_symbol；无则为空）
 * `logs`: {seq, items:[...]}（最近 N 条）
 
+### 4.8 序列化规则（强约束）
+
+* 时间字段：
+
+  * `ts` 使用 epoch 毫秒（int64）
+  * `MarketSnapshot.rows` 中的 `trading_date/datetime/list_date/expiry_date` 使用 **ISO 8601 带时区字符串**（Asia/Shanghai，示例：`2026-02-04T21:05:00+08:00`）
+* 浮点字段：
+
+  * JSON 中禁止 `NaN/Inf/-Inf`
+  * 统一在 python 侧转换为 `null`
+* 缺失值：
+
+  * 缺失/不可用字段统一输出 `null`，不要输出空字符串占位
+* 行键要求：
+
+  * `row_key` 固定为 `ctp_contract`
+  * 若 `ctp_contract` 为空，该行直接丢弃（不进入 snapshot）
+
 ---
 
 ## 5. UI 侧排序（与 DataFrame 输出解耦）
@@ -165,9 +217,19 @@
 * UI 维护 `sort_spec = {sort_by, order}`（仅本地）
 * UI 每次 tick poll `ViewSnapshot` 后：
 
-  * 对 market.rows 在 UI 内排序（推荐：数值列按数值比较，字符串列按字典序）
+  * 对 market.rows 在 UI 内排序（数值列按 numeric 比较，字符串列按字典序）
   * 列宽策略：固定或平滑自适应（防抖动）
 * sort_spec **不写入 router**；仅 `focus_symbol` 反向传播给 router/worker。
+
+### 5.1 默认排序与比较规则（已定版）
+
+* 默认排序：`sort_by=volume`，`order=desc`
+* 数值列白名单（按 float/int 比较）：
+
+  * `last/pre_settlement/pre_close/open/high/low/turnover/close/settlement/limit_up/limit_down/bid1/ask1/average_price/multiplier/strike`
+  * `volume/pre_open_interest/open_interest/bid_vol1/ask_vol1`
+* 其他字段按字符串比较（locale 无关，直接按字节序）
+* 稳定排序：主键按 `sort_spec`，次键固定 `ctp_contract`（保证刷新时行顺序稳定）
 
 ---
 
@@ -185,7 +247,7 @@
 
 * **Go**：tcell + tview（不引入更重 UI 框架）。
 * **Python**：仅依赖 pandas + 必要的 JSON-RPC 库（优先 asyncio 生态，避免引入大而全的服务框架）。
-* **IPC/协议**：统一 JSON-RPC 2.0 over TCP（localhost），必须实现消息分帧（推荐 length-prefix 或 NDJSON；但外层仍符合 JSON-RPC 结构）。
+* **IPC/协议**：统一 JSON-RPC 2.0 over TCP（localhost），分帧协议固定为 **length-prefix**（外层消息体保持 JSON-RPC 结构）。
 * **无消息队列**：本阶段不引入 Redis/NATS/Kafka 等。
 * **无持久化要求**：router 仅维护内存最新快照 + ring buffer（有上限）。
 * **无高 FPS**：UI 500ms 或 1s tick；禁止用“消息到达立即重绘”的方式。
@@ -220,6 +282,8 @@
 3. **MarketSnapshot size**：采用全量 snapshot（不做 top N/分页）。
 4. **排序职责**：排序仅在 UI 左上行情表本地生效，不写入 router；唯一反向传播的是 `focus_symbol`。
 5. **seq 来源**：由 router 为每个 section 统一递增。
+6. **时间字段格式**：`rows` 内 datetime 字段统一为 ISO 8601 带时区（`+08:00`）。
+7. **UI tick 默认频率**：固定 500ms（若现场出现闪烁，再降为 1s）。
 
 ---
 
@@ -230,29 +294,38 @@
 1. **定义 IPC/Router 基础**
    - 新增 router 模块（Go）维护 latest snapshots + ring buffer + UI state。
    - 实现 JSON-RPC server（TCP localhost）。
-   - 选择分帧方案（length-prefix 或 NDJSON）并实现。
+   - 分帧方案固定为 length-prefix，并提供 encode/decode 公共工具。
+   - 实现 request timeout（2s）与统一错误码映射。
 2. **live_md 输出接入 router**
    - live_md 生成 MarketSnapshot（从 DataFrame 组装）。
    - 通过 JSON-RPC notification `market.snapshot` 推送 router。
    - TODO (live_md): 实际 MarketSnapshot 构造逻辑与字段映射由你补充。
+   - 增加 python 侧清洗：NaN/Inf -> null、datetime -> ISO8601(+08:00)。
 3. **Go UI 侧拉取与渲染**
    - UI 每 500ms poll `router.get_view_snapshot`。
    - 按 section seq diff 更新对应区域（市场表/曲线/期权/日志）。
    - 统一刷新入口，确保原位重绘、固定列宽减少抖动。
+   - 仅当 section `seq` 变化时更新对应组件，避免全屏重绘。
 4. **排序交互（仅 UI 本地）**
    - UI 侧维护 sort_spec（列 + 升/降序）。
    - UI 内部对 market.rows 排序，仅影响显示。
 5. **联调与验收**
    - 先只打通 market + logs，确保 UI 刷新稳定。
    - 再接入 unusual/curve/options（由 worker 模拟或后续补齐）。
+6. **故障恢复与可观测性**
+   - UI/live_md/worker 统一实现指数退避重连（0.5s~5s）。
+   - 各 section 支持 stale 标记与日志告警（不清空最后画面）。
 
 ### 10.2 Checklist
 
 - [ ] router 提供 JSON-RPC server，支持 market/curve/options/unusual/log 的缓存与 UI state。
 - [ ] live_md 能稳定推送 `market.snapshot`（500ms）。
+- [ ] live_md 输出满足序列化规则（datetime ISO8601+08:00，NaN/Inf 已转 null）。
 - [ ] UI 每 500ms poll view snapshot，market 表格无追加打印、无明显抖动。
 - [ ] 排序切换生效（升/降序），行选中稳定。
+- [ ] 默认排序为 `volume desc`，且稳定排序次键为 `ctp_contract`。
 - [ ] 日志与异常处理可见（stale/parse error 不崩溃）。
+- [ ] 断线重连/backoff 与 timeout(2s) 行为已联调通过。
 
 ### 10.3 需要修改/新增的文件（初版）
 
@@ -303,4 +376,33 @@
       'option_type' -- string | 期权类型（'1'-认购，'2'-认沽）, 
       'strike' -- null / float, 
       'status' -- string |  合约状态（'0'-未上市，'1'-上市，'2'-停牌，'3'-到期/退市）
-  - market_snapshot index 已重置为pure numeric排序，无需处理
+  - market_snapshot index 已重置为pure numeric排序，无需处理。如后续需要index信息，则根据需求，重设为 ctp_contract 或其他字段
+
+---
+
+## 11. 测试与验收矩阵（必须执行）
+
+### 11.1 Router / IPC 单测（Go）
+
+- length-prefix 编解码：粘包/拆包/空包/非法长度。
+- JSON-RPC：notification 与 request/response 的方法分发、错误码、timeout。
+- seq 递增：每个 section 独立递增，且 diff 判断稳定。
+
+### 11.2 live_md Payload 单测（Python）
+
+- DataFrame -> MarketSnapshot 转换正确（字段完整、row_key 正确）。
+- datetime 字段输出 ISO8601+08:00。
+- NaN/Inf 处理为 null。
+
+### 11.3 UI 渲染单测/行为测试（Go）
+
+- section diff：仅变化 section 更新，未变化 section 不重绘。
+- market 本地排序：`volume desc` 默认生效，升降序切换正确。
+- 稳定性：同一 sort_spec 下，选中行基于 `ctp_contract` 保持稳定。
+
+### 11.4 E2E Smoke（手工/脚本）
+
+1. 启动 starsling（内嵌 router）后，UI 可进入 live panel 且无崩溃。
+2. live_md 推送后，左上 market 表可持续刷新且无追加打印。
+3. 断开 live_md 或 router 后，UI 显示 stale/断线状态并自动重连。
+4. 恢复连接后，数据继续刷新，排序与选中状态不丢失。

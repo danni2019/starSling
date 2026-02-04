@@ -3,6 +3,7 @@ package live
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -24,7 +25,15 @@ type Process struct {
 	stopped bool
 }
 
-func Start(ctx context.Context, cfg config.LiveMDConfig, pythonPath string, logger *slog.Logger) (*Process, error) {
+func Start(ctx context.Context, cfg config.LiveMDConfig, pythonPath string, routerAddr string, logger *slog.Logger) (*Process, error) {
+	return start(ctx, cfg, pythonPath, routerAddr, logger, os.Stdout, os.Stderr)
+}
+
+func StartDetached(ctx context.Context, cfg config.LiveMDConfig, pythonPath string, routerAddr string, logger *slog.Logger) (*Process, error) {
+	return start(ctx, cfg, pythonPath, routerAddr, logger, io.Discard, io.Discard)
+}
+
+func start(ctx context.Context, cfg config.LiveMDConfig, pythonPath string, routerAddr string, logger *slog.Logger, stdout io.Writer, stderr io.Writer) (*Process, error) {
 	if len(cfg.Instruments) == 0 {
 		ids, err := metadata.LoadContractInstrumentIDs()
 		if err != nil {
@@ -43,13 +52,19 @@ func Start(ctx context.Context, cfg config.LiveMDConfig, pythonPath string, logg
 		return nil, err
 	}
 
-	args := buildArgs(cfg, scriptPath)
+	args := buildArgs(cfg, scriptPath, routerAddr)
 	logger.Info("starting live md", "python", resolved, "host", cfg.Host, "port", cfg.Port)
 
 	cmdCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(cmdCtx, resolved, args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	if stdout == nil {
+		stdout = io.Discard
+	}
+	if stderr == nil {
+		stderr = io.Discard
+	}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	if err := cmd.Start(); err != nil {
 		cleanup()

@@ -113,7 +113,7 @@ func superviseLive(ctx context.Context, cfg config.LiveMDConfig, pythonPath stri
 				continue
 			}
 
-			proc, err = live.Start(ctx, cfg, pythonPath, logger)
+			proc, err = live.Start(ctx, cfg, pythonPath, "", logger)
 			if err != nil {
 				logger.Warn("live-md start failed", "error", err)
 				proc = nil

@@ -3,6 +3,8 @@
 /starsling
 /runtime/
 .venv/
+__pycache__/
+*.pyc
 *.exe
 *.test
 *.out

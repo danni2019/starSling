@@ -18,8 +18,8 @@ import (
 //go:embed live_md.py
 var liveScript []byte
 
-func Run(ctx context.Context, cfg config.LiveMDConfig, pythonPath string, logger *slog.Logger) error {
-	proc, err := Start(ctx, cfg, pythonPath, logger)
+func Run(ctx context.Context, cfg config.LiveMDConfig, pythonPath string, routerAddr string, logger *slog.Logger) error {
+	proc, err := Start(ctx, cfg, pythonPath, routerAddr, logger)
 	if err != nil {
 		return err
 	}
@@ -29,13 +29,16 @@ func Run(ctx context.Context, cfg config.LiveMDConfig, pythonPath string, logger
 	return nil
 }
 
-func buildArgs(cfg config.LiveMDConfig, scriptPath string) []string {
+func buildArgs(cfg config.LiveMDConfig, scriptPath string, routerAddr string) []string {
 	args := []string{
 		scriptPath,
 		"--api", cfg.API,
 		"--protocol", cfg.Protocol,
 		"--host", cfg.Host,
 		"--port", strconv.Itoa(cfg.Port),
+	}
+	if strings.TrimSpace(routerAddr) != "" {
+		args = append(args, "--router_addr", strings.TrimSpace(routerAddr))
 	}
 	if cfg.Username != "" {
 		args = append(args, "--username", cfg.Username)

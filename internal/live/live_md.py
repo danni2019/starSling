@@ -1,16 +1,22 @@
 import argparse
 import json
+import math
 import os
 import signal
+import socket
+import struct
 import sys
 import time
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import pandas as pd
 import numpy as np
 
 from openctp_ctp import thostmduserapi as mdapi
 
 LOGIN_TIMEOUT_SECONDS = 60
+PUSH_INTERVAL_SECONDS = 0.5
+LOCAL_TZ = ZoneInfo("Asia/Shanghai")
 
 def log(message: str) -> None:
     print(message, file=sys.stderr, flush=True)
@@ -20,6 +26,102 @@ def parse_instruments(raw: str) -> list[str]:
     if not raw:
         return []
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def parse_router_addr(raw: str):
+    if not raw:
+        return None
+    value = raw.strip()
+    if not value:
+        return None
+    if ":" not in value:
+        return None
+    host, port_str = value.rsplit(":", 1)
+    host = host.strip()
+    if not host:
+        return None
+    try:
+        port = int(port_str)
+    except ValueError:
+        return None
+    if port <= 0 or port > 65535:
+        return None
+    return host, port
+
+
+def _sanitize_value(value):
+    if isinstance(value, (pd.Timestamp, datetime)):
+        ts = pd.Timestamp(value)
+        if pd.isna(ts):
+            return None
+        if ts.tzinfo is None:
+            ts = ts.tz_localize(LOCAL_TZ)
+        else:
+            ts = ts.tz_convert(LOCAL_TZ)
+        return ts.isoformat()
+    if value is None:
+        return None
+    if isinstance(value, (np.generic,)):
+        value = value.item()
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return None
+        return value
+    if isinstance(value, (np.floating,)):
+        casted = float(value)
+        if math.isnan(casted) or math.isinf(casted):
+            return None
+        return casted
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    return value
+
+
+def build_market_snapshot(df: pd.DataFrame) -> dict:
+    if df is None:
+        df = pd.DataFrame()
+    columns = [str(item) for item in list(df.columns)]
+    rows = []
+    for _, row in df.iterrows():
+        row_obj = {}
+        for column in columns:
+            row_obj[column] = _sanitize_value(row[column])
+        contract = str(row_obj.get("ctp_contract", "") or "").strip()
+        if not contract:
+            continue
+        row_obj["ctp_contract"] = contract
+        rows.append(row_obj)
+    return {
+        "schema_version": 1,
+        "ts": int(time.time() * 1000),
+        "row_key": "ctp_contract",
+        "columns": columns,
+        "rows": rows,
+    }
+
+
+def publish_notification(router_target, method: str, params: dict) -> bool:
+    if router_target is None:
+        return False
+    payload = {
+        "jsonrpc": "2.0",
+        "method": method,
+        "params": params,
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    frame = struct.pack(">I", len(encoded)) + encoded
+    try:
+        with socket.create_connection(router_target, timeout=1.0) as conn:
+            conn.sendall(frame)
+        return True
+    except Exception as exc:
+        log(f"router publish failed: {exc}")
+        return False
 
 
 def metadata_cache_dirs() -> list[str]:
@@ -69,7 +171,7 @@ class MdSpi(mdapi.CThostFtdcMdSpi):
 
     def __contract_meta__(self):
         contract_meta_data = load_metadata_payload("contract")
-        if self.contract_meta_data is None:
+        if contract_meta_data is None:
             raise ValueError(f"Missing Critical Metadata: Contract Meta Not Found.")
         contract_data = contract_meta_data.get("data", None)
         if contract_data is None or (isinstance(contract_data, list) and len(contract_data) == 0):
@@ -185,6 +287,14 @@ class MdSpi(mdapi.CThostFtdcMdSpi):
 
     def md(self):
         md_df = self.__raw_md_snapshot__()
+        if md_df.empty:
+            return pd.DataFrame(columns=[
+                'trading_date', 'datetime', 'ctp_contract', 'last', 'pre_settlement', 'pre_close',
+                'pre_open_interest', 'open', 'high', 'low', 'volume', 'turnover', 'open_interest',
+                'close', 'settlement', 'limit_up', 'limit_down', 'bid1', 'ask1', 'bid_vol1',
+                'ask_vol1', 'average_price', 'exchange', 'name', 'product_class', 'symbol',
+                'multiplier', 'list_date', 'expiry_date', 'underlying', 'option_type', 'strike', 'status'
+            ])
         cond = md_df[md_df.dtypes[md_df.dtypes.astype(str).isin(['float64', 'int64'])].index.tolist()] > 1e10
         md_df[
             md_df.dtypes[md_df.dtypes.astype(str).isin(['float64', 'int64'])].index.tolist()
@@ -197,11 +307,14 @@ class MdSpi(mdapi.CThostFtdcMdSpi):
             " " +
             md_df['UpdateTime'] +
             "." +
-            md_df['UpdateMillisec'].astype(str)
+            md_df['UpdateMillisec'].astype(str),
+            errors='coerce'
         )
+        md_df['datetime'] = md_df['datetime'].dt.tz_localize(LOCAL_TZ, ambiguous='NaT', nonexistent='NaT')
+        now_local = datetime.now(LOCAL_TZ)
         md_df = md_df[
-            (md_df['datetime'] <= (datetime.now() + timedelta(minutes=2))) &
-            (md_df['datetime'] >= (datetime.now() + timedelta(minutes=-2)))
+            (md_df['datetime'] <= (now_local + timedelta(minutes=2))) &
+            (md_df['datetime'] >= (now_local + timedelta(minutes=-2)))
         ].copy()
 
         md_df = md_df.drop(
@@ -260,6 +373,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--username", default="", help="CTP username (optional)")
     parser.add_argument("--password", default="", help="CTP password (optional)")
     parser.add_argument("--instruments", default="", help="Comma-separated instrument list")
+    parser.add_argument("--router_addr", default=os.environ.get("STARSLING_ROUTER_ADDR", ""), help="Router tcp addr, e.g. 127.0.0.1:19090")
     return parser.parse_args()
 
 
@@ -276,6 +390,9 @@ def main() -> int:
 
     front = f"{args.protocol}://{args.host}:{args.port}"
     spi = MdSpi(front, instruments, args.username, args.password)
+    router_target = parse_router_addr(args.router_addr)
+    if args.router_addr and router_target is None:
+        log(f"invalid router_addr: {args.router_addr}")
 
     def handle_signal(signum, frame) -> None:
         spi.stop()
@@ -287,6 +404,7 @@ def main() -> int:
     spi.Run()
 
     start_ts = time.monotonic()
+    last_push_ts = 0.0
     exit_code = 0
     while spi.running:
         if not spi.login_ok and (time.monotonic() - start_ts) > LOGIN_TIMEOUT_SECONDS:
@@ -297,8 +415,24 @@ def main() -> int:
             exit_code = 2
             break
         time.sleep(0.2)
-
-        market_snapshot = spi.md()
+        if not spi.login_ok:
+            continue
+        if not spi.tick_buff:
+            continue
+        now = time.monotonic()
+        if now - last_push_ts < PUSH_INTERVAL_SECONDS:
+            continue
+        last_push_ts = now
+        try:
+            market_df = spi.md()
+            if market_df.empty:
+                continue
+            market_snapshot = build_market_snapshot(market_df)
+            if len(market_snapshot.get("rows", [])) == 0:
+                continue
+            publish_notification(router_target, "market.snapshot", market_snapshot)
+        except Exception as exc:
+            log(f"build/push market snapshot failed: {exc}")
 
     if spi.login_failed:
         exit_code = 2
