@@ -3,8 +3,11 @@ package tui
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
+	"os/exec"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -110,6 +113,13 @@ type UI struct {
 	optionsDeltaAbsMin    float64
 	optionsDeltaAbsMax    float64
 	optionsDeltaEnabled   bool
+	voiceEnabled          bool
+	voiceContracts        map[string]struct{}
+	voiceLastSpoken       map[string]time.Time
+	voiceLastPrice        map[string]float64
+	voiceUnavailable      bool
+	voiceMutedAt          time.Time
+	lastCurveContracts    []string
 	lastCurveSeq          int64
 	lastCurveStale        bool
 	lastUnusualSeq        int64
@@ -140,6 +150,9 @@ func newUI(routerAddr string, logger *slog.Logger) *UI {
 		unusualRatioThreshold: 0.05,
 		optionsDeltaAbsMin:    defaultOptionsDeltaAbsMin,
 		optionsDeltaAbsMax:    defaultOptionsDeltaAbsMax,
+		voiceContracts:        make(map[string]struct{}),
+		voiceLastSpoken:       make(map[string]time.Time),
+		voiceLastPrice:        make(map[string]float64),
 	}
 	if ui.routerAddr != "" {
 		ui.rpcClient = ipc.NewClient(ui.routerAddr)
@@ -216,6 +229,8 @@ func (ui *UI) handleLiveKeys(event *tcell.EventKey) *tcell.EventKey {
 			ui.openMarketFilter()
 		} else if ui.app.GetFocus() == ui.liveOpts {
 			ui.openOptionsFilter()
+		} else if ui.app.GetFocus() == ui.liveCurve {
+			ui.openVoiceSettings()
 		} else if ui.app.GetFocus() == ui.liveTrades {
 			ui.openUnusualThresholdSettings()
 		}
@@ -399,6 +414,105 @@ func (ui *UI) openUnusualThresholdSettings() {
 	})
 
 	ui.pages.AddPage(string(screenDrilldown), centerModal(form, 62, 10), true, true)
+	ui.app.SetFocus(form)
+}
+
+func (ui *UI) openVoiceSettings() {
+	ui.setCurrentScreen(screenDrilldown)
+	enabled := ui.voiceEnabled
+	contracts := make([]string, 0, len(ui.lastCurveContracts))
+	contracts = append(contracts, ui.lastCurveContracts...)
+	sort.Strings(contracts)
+	localContracts := make(map[string]struct{}, len(ui.voiceContracts))
+	for contract := range ui.voiceContracts {
+		localContracts[contract] = struct{}{}
+	}
+
+	form := tview.NewForm()
+	enabledBox := tview.NewCheckbox().SetLabel("Quote voice reporting").SetChecked(enabled)
+	list := tview.NewList()
+	list.ShowSecondaryText(false)
+	list.SetUseStyleTags(false, false)
+	list.SetBorder(true).SetTitle("Contracts")
+	list.SetBorderColor(colorBorder).SetTitleColor(colorBorder)
+	for idx, contract := range contracts {
+		text := contract
+		if _, ok := localContracts[contract]; ok {
+			text = "[x] " + contract
+		} else {
+			text = "[ ] " + contract
+		}
+		contractIdx := idx
+		list.AddItem(text, "", 0, func() {
+			name := contracts[contractIdx]
+			if _, ok := localContracts[name]; ok {
+				delete(localContracts, name)
+			} else {
+				localContracts[name] = struct{}{}
+			}
+			if _, ok := localContracts[name]; ok {
+				list.SetItemText(contractIdx, "[x] "+name, "")
+			} else {
+				list.SetItemText(contractIdx, "[ ] "+name, "")
+			}
+		})
+	}
+
+	form.AddFormItem(enabledBox)
+	form.AddButton("Apply", func() {
+		ui.voiceEnabled = enabledBox.IsChecked()
+		if !ui.voiceEnabled {
+			ui.voiceContracts = make(map[string]struct{})
+			ui.voiceLastSpoken = make(map[string]time.Time)
+			ui.voiceLastPrice = make(map[string]float64)
+			ui.voiceUnavailable = false
+			ui.voiceMutedAt = time.Time{}
+		} else {
+			ui.voiceUnavailable = false
+			ui.voiceContracts = make(map[string]struct{}, len(localContracts))
+			for contract := range localContracts {
+				ui.voiceContracts[contract] = struct{}{}
+			}
+		}
+		ui.closeDrilldown()
+	})
+	form.AddButton("Cancel", func() {
+		ui.closeDrilldown()
+	})
+	form.SetBorder(true).SetTitle("Quote voice reporting")
+	form.SetBorderColor(colorBorder).SetTitleColor(colorBorder)
+	form.SetBackgroundColor(colorBackground)
+	form.SetFieldBackgroundColor(colorBackground)
+	form.SetFieldTextColor(colorTableRow)
+	form.SetButtonBackgroundColor(colorHighlight)
+	form.SetButtonTextColor(colorMenuSelected)
+
+	form.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyTab {
+			_, buttonIndex := form.GetFocusedItemIndex()
+			if buttonIndex == form.GetButtonCount()-1 {
+				ui.app.SetFocus(list)
+				return nil
+			}
+		}
+		return event
+	})
+
+	list.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		switch event.Key() {
+		case tcell.KeyBacktab:
+			form.SetFocus(form.GetFormItemCount() + form.GetButtonCount() - 1)
+			ui.app.SetFocus(form)
+			return nil
+		}
+		return event
+	})
+
+	layout := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(form, 7, 1, true).
+		AddItem(list, 0, 1, false)
+
+	ui.pages.AddPage(string(screenDrilldown), centerModal(layout, 64, 16), true, true)
 	ui.app.SetFocus(form)
 }
 
@@ -650,6 +764,7 @@ func (ui *UI) applyCurveSnapshot(snapshot router.CurveSnapshot) {
 			ui.lastCurveSeq = 0
 			ui.lastCurveStale = false
 		}
+		ui.lastCurveContracts = nil
 		return
 	}
 	seqChanged := snapshot.Seq != ui.lastCurveSeq
@@ -660,6 +775,8 @@ func (ui *UI) applyCurveSnapshot(snapshot router.CurveSnapshot) {
 	if seqChanged {
 		ui.liveCurve.SetText(renderCurvePanel(snapshot.Rows))
 		ui.lastCurveSeq = snapshot.Seq
+		ui.lastCurveContracts = extractCurveContracts(snapshot.Rows)
+		ui.maybeSpeakQuotes(snapshot.Rows)
 	}
 	if staleChanged && snapshot.Stale {
 		ui.appendLiveLogLine("curve snapshot stale")
@@ -733,6 +850,9 @@ func (ui *UI) applyRouterLogs(snapshot router.LogSnapshot) {
 		}
 		source := strings.TrimSpace(item.Source)
 		level := strings.TrimSpace(item.Level)
+		if strings.EqualFold(level, "debug") {
+			continue
+		}
 		if source != "" || level != "" {
 			msg = strings.TrimSpace(strings.Join([]string{source, level, msg}, " "))
 		}
@@ -1404,6 +1524,128 @@ func convertUnusualTrades(rows []map[string]any) []TradeRow {
 		})
 	}
 	return out
+}
+
+func extractCurveContracts(rows []map[string]any) []string {
+	contracts := make([]string, 0, len(rows))
+	seen := make(map[string]struct{})
+	for _, row := range rows {
+		contract := strings.TrimSpace(asString(row["ctp_contract"]))
+		if contract == "" {
+			continue
+		}
+		if _, ok := seen[contract]; ok {
+			continue
+		}
+		seen[contract] = struct{}{}
+		contracts = append(contracts, contract)
+	}
+	sort.Slice(contracts, func(i, j int) bool {
+		return strings.ToLower(contracts[i]) < strings.ToLower(contracts[j])
+	})
+	return contracts
+}
+
+func (ui *UI) maybeSpeakQuotes(rows []map[string]any) {
+	if !ui.voiceEnabled || ui.voiceUnavailable {
+		return
+	}
+	if len(ui.voiceContracts) == 0 {
+		return
+	}
+	now := time.Now()
+	if !ui.voiceMutedAt.IsZero() && now.Before(ui.voiceMutedAt.Add(30*time.Second)) {
+		return
+	}
+	if _, _, err := resolveVoiceCommand("check"); err != nil {
+		ui.appendLiveLogLine("voice disabled: " + err.Error())
+		ui.voiceUnavailable = true
+		ui.voiceEnabled = false
+		ui.voiceContracts = make(map[string]struct{})
+		ui.voiceMutedAt = time.Time{}
+		return
+	}
+	for _, row := range rows {
+		contract := strings.TrimSpace(asString(row["ctp_contract"]))
+		if contract == "" {
+			continue
+		}
+		if _, ok := ui.voiceContracts[contract]; !ok {
+			continue
+		}
+		last, ok := asOptionalFloat(row["forward"])
+		if !ok {
+			last, ok = asOptionalFloat(row["last"])
+		}
+		if !ok {
+			continue
+		}
+		prevPrice, hasPrev := ui.voiceLastPrice[contract]
+		if hasPrev && prevPrice == last {
+			continue
+		}
+		prevSpoken, hasSpoken := ui.voiceLastSpoken[contract]
+		if hasSpoken && now.Sub(prevSpoken) < 30*time.Second {
+			continue
+		}
+		msg := fmt.Sprintf("%s: %s", spellContract(contract), formatFloat(last))
+		go func(text string) {
+			if err := ui.speak(text); err != nil {
+				ui.app.QueueUpdateDraw(func() {
+					ui.appendLiveLogLine("voice disabled: " + err.Error())
+					ui.voiceUnavailable = true
+					ui.voiceEnabled = false
+					ui.voiceContracts = make(map[string]struct{})
+				})
+			}
+		}(msg)
+		ui.voiceLastPrice[contract] = last
+		ui.voiceLastSpoken[contract] = now
+	}
+}
+
+func (ui *UI) speak(text string) error {
+	cmd, args, err := resolveVoiceCommand(text)
+	if err != nil {
+		return err
+	}
+	command := exec.Command(cmd, args...)
+	command.Stdout = io.Discard
+	command.Stderr = io.Discard
+	return command.Run()
+}
+
+func resolveVoiceCommand(text string) (string, []string, error) {
+	if text == "" {
+		return "", nil, fmt.Errorf("empty speech text")
+	}
+	if runtime.GOOS == "darwin" {
+		if _, err := exec.LookPath("say"); err == nil {
+			return "say", []string{text}, nil
+		}
+		return "", nil, fmt.Errorf("say not available")
+	}
+	if _, err := exec.LookPath("espeak"); err == nil {
+		return "espeak", []string{text}, nil
+	}
+	if _, err := exec.LookPath("spd-say"); err == nil {
+		return "spd-say", []string{text}, nil
+	}
+	return "", nil, fmt.Errorf("no speech command available")
+}
+
+func spellContract(contract string) string {
+	parts := make([]string, 0, len(contract))
+	for _, r := range strings.ToUpper(contract) {
+		if r >= 'A' && r <= 'Z' {
+			parts = append(parts, string(r))
+			continue
+		}
+		if r >= '0' && r <= '9' {
+			parts = append(parts, string(r))
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 func optionsRowsKey(rows []map[string]any) string {
