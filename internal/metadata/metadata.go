@@ -62,6 +62,13 @@ func LoadSources() ([]Source, error) {
 }
 
 func RefreshAll(ctx context.Context, logger *slog.Logger, sources []Source) error {
+	return refreshSources(ctx, logger, sources)
+}
+
+func refreshSources(ctx context.Context, logger *slog.Logger, sources []Source) error {
+	if len(sources) == 0 {
+		return nil
+	}
 	cacheDir, err := CacheDir()
 	if err != nil {
 		return err
@@ -85,23 +92,22 @@ func RefreshAll(ctx context.Context, logger *slog.Logger, sources []Source) erro
 }
 
 func RefreshIfStale(ctx context.Context, logger *slog.Logger, sources []Source, now time.Time) ([]Warning, bool, error) {
-	needsRefresh := false
+	staleSources := make([]Source, 0, len(sources))
 	for _, source := range sources {
 		cached, err := Load(source.Name)
 		if err != nil {
-			needsRefresh = true
+			staleSources = append(staleSources, source)
 			continue
 		}
 		if IsStale(cached.LastUpdated, now, RefreshAfter) {
-			needsRefresh = true
-			break
+			staleSources = append(staleSources, source)
 		}
 	}
 
 	var refreshErr error
 	refreshed := false
-	if needsRefresh {
-		refreshErr = RefreshAll(ctx, logger, sources)
+	if len(staleSources) > 0 {
+		refreshErr = refreshSources(ctx, logger, staleSources)
 		refreshed = true
 	}
 

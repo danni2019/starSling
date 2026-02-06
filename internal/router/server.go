@@ -175,6 +175,27 @@ func (s *Server) handleNotification(msg ipc.Message) {
 			return
 		}
 		s.state.UpdateOptions(snapshot)
+	case "curve.snapshot":
+		var snapshot CurveSnapshot
+		if err := json.Unmarshal(msg.Params, &snapshot); err != nil {
+			s.logger.Warn("curve.snapshot decode failed", "error", err)
+			return
+		}
+		s.state.UpdateCurve(snapshot)
+	case "unusual.snapshot":
+		var snapshot UnusualSnapshot
+		if err := json.Unmarshal(msg.Params, &snapshot); err != nil {
+			s.logger.Warn("unusual.snapshot decode failed", "error", err)
+			return
+		}
+		s.state.UpdateUnusual(snapshot)
+	case "log.append":
+		var line LogLine
+		if err := json.Unmarshal(msg.Params, &line); err != nil {
+			s.logger.Warn("log.append decode failed", "error", err)
+			return
+		}
+		s.state.AppendLog(line)
 	default:
 		s.logger.Debug("ignore unknown notification", "method", msg.Method)
 	}
@@ -214,6 +235,14 @@ func (s *Server) handleRequest(conn net.Conn, msg ipc.Message) {
 			return
 		}
 		s.state.SetFocusSymbol(params.Symbol)
+		_ = s.writeResult(conn, msg.ID, map[string]bool{"ok": true})
+	case "ui.set_unusual_threshold":
+		var params SetUnusualThresholdParams
+		if err := json.Unmarshal(msg.Params, &params); err != nil {
+			_ = s.writeError(conn, msg.ID, -32602, "invalid params")
+			return
+		}
+		s.state.SetUnusualThresholds(params.TurnoverChgThreshold, params.TurnoverRatioThreshold)
 		_ = s.writeResult(conn, msg.ID, map[string]bool{"ok": true})
 	default:
 		_ = s.writeError(conn, msg.ID, -32601, "method not found")

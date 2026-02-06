@@ -1,6 +1,7 @@
 import argparse
 import json
 import math
+import re
 import socket
 import struct
 import sys
@@ -17,9 +18,12 @@ except Exception:
 
 REQUEST_TIMEOUT_SECONDS = 2.0
 POLL_INTERVAL_SECONDS = 0.5
+MAX_BACKOFF_SECONDS = 5.0
 PARAM_DAYS_IN_YEAR = 365.0
 MIN_TTE_DAYS = 0.1
 DEFAULT_RISK_FREE_RATE = 0.01
+HEALTH_LOG_INTERVAL = 30
+IV_DEBUG_SAMPLE_LIMIT = 5
 
 
 def log(message: str) -> None:
@@ -72,12 +76,21 @@ def _sanitize_text(value):
 
 
 def _option_type_to_cp(raw):
-    token = str(raw).strip()
-    if token == "1":
+    token = str(raw).strip().lower()
+    if token in ("1", "c", "call", "认购"):
         return "c"
-    if token == "2":
+    if token in ("2", "p", "put", "认沽"):
         return "p"
     return None
+
+
+def _safe_int(value):
+    if value is None:
+        return None
+    try:
+        return int(float(value))
+    except Exception:
+        return None
 
 
 def _normalize_tte_days(value):
@@ -133,9 +146,21 @@ def _rpc_notify(router_target, method: str, params: dict) -> None:
         conn.sendall(frame)
 
 
+def _safe_append_log(router_target, level: str, source: str, message: str) -> None:
+    if not message:
+        return
+    try:
+        _rpc_notify(router_target, "log.append", {
+            "ts": int(time.time() * 1000),
+            "level": level,
+            "source": source,
+            "message": message,
+        })
+    except Exception:
+        pass
+
+
 def _compute_greeks(option_type, underlying, strike, option_price, tte_days, risk_free_rate):
-    if not HAS_VOLLIB:
-        return None, None, None, None, None
     if option_type not in ("c", "p"):
         return None, None, None, None, None
     if underlying is None or strike is None or option_price is None:
@@ -146,6 +171,22 @@ def _compute_greeks(option_type, underlying, strike, option_price, tte_days, ris
     if tte_days is None:
         return None, None, None, None, None
     t_year = tte_days / PARAM_DAYS_IN_YEAR
+    if not HAS_VOLLIB:
+        sigma = _fallback_implied_volatility(
+            option_type=option_type,
+            option_price=option_price,
+            underlying=underlying,
+            strike=strike,
+            risk_free_rate=risk_free_rate,
+            t_year=t_year,
+        )
+        sigma = _sanitize_number(sigma)
+        if sigma is None or sigma <= 0:
+            return None, None, None, None, None
+        d = _sanitize_number(_fallback_delta(option_type, underlying, strike, risk_free_rate, t_year, sigma))
+        g = _sanitize_number(_fallback_gamma(underlying, risk_free_rate, t_year, sigma, strike))
+        v = _sanitize_number(_fallback_vega(underlying, risk_free_rate, t_year, sigma, strike))
+        return sigma, d, g, None, v
     try:
         sigma = implied_volatility(option_price, underlying, strike, risk_free_rate, t_year, option_type)
         sigma = _sanitize_number(sigma)
@@ -162,31 +203,214 @@ def _compute_greeks(option_type, underlying, strike, option_price, tte_days, ris
         return None, None, None, None, None
 
 
-def build_options_snapshot(rows, risk_free_rate: float) -> dict:
+SQRT_2 = math.sqrt(2.0)
+SQRT_2PI = math.sqrt(2.0 * math.pi)
+
+
+def _norm_cdf(x):
+    return 0.5 * (1.0 + math.erf(x / SQRT_2))
+
+
+def _norm_pdf(x):
+    return math.exp(-0.5 * x * x) / SQRT_2PI
+
+
+def _black_price(option_type, underlying, strike, risk_free_rate, t_year, sigma):
+    if sigma <= 0 or t_year <= 0:
+        disc = math.exp(-risk_free_rate * t_year)
+        intrinsic = max(underlying - strike, 0.0) if option_type == "c" else max(strike - underlying, 0.0)
+        return disc * intrinsic
+    sqrt_t = math.sqrt(t_year)
+    d1 = (math.log(underlying / strike) + 0.5 * sigma * sigma * t_year) / (sigma * sqrt_t)
+    d2 = d1 - sigma * sqrt_t
+    disc = math.exp(-risk_free_rate * t_year)
+    if option_type == "c":
+        return disc * (underlying * _norm_cdf(d1) - strike * _norm_cdf(d2))
+    return disc * (strike * _norm_cdf(-d2) - underlying * _norm_cdf(-d1))
+
+
+def _fallback_implied_volatility(option_type, option_price, underlying, strike, risk_free_rate, t_year):
+    if option_type not in ("c", "p") or option_price <= 0 or underlying <= 0 or strike <= 0 or t_year <= 0:
+        return None
+    low = 1e-6
+    high = 3.0
+    price_low = _black_price(option_type, underlying, strike, risk_free_rate, t_year, low)
+    if option_price < price_low:
+        return None
+    price_high = _black_price(option_type, underlying, strike, risk_free_rate, t_year, high)
+    attempts = 0
+    while option_price > price_high and high < 20.0 and attempts < 8:
+        high *= 2.0
+        price_high = _black_price(option_type, underlying, strike, risk_free_rate, t_year, high)
+        attempts += 1
+    if option_price > price_high:
+        return None
+    for _ in range(80):
+        mid = 0.5 * (low + high)
+        price_mid = _black_price(option_type, underlying, strike, risk_free_rate, t_year, mid)
+        if abs(price_mid - option_price) < 1e-8:
+            return mid
+        if price_mid < option_price:
+            low = mid
+        else:
+            high = mid
+    return 0.5 * (low + high)
+
+
+def _fallback_delta(option_type, underlying, strike, risk_free_rate, t_year, sigma):
+    if sigma <= 0 or t_year <= 0 or underlying <= 0 or strike <= 0:
+        return None
+    sqrt_t = math.sqrt(t_year)
+    d1 = (math.log(underlying / strike) + 0.5 * sigma * sigma * t_year) / (sigma * sqrt_t)
+    disc = math.exp(-risk_free_rate * t_year)
+    if option_type == "c":
+        return disc * _norm_cdf(d1)
+    return -disc * _norm_cdf(-d1)
+
+
+def _fallback_gamma(underlying, risk_free_rate, t_year, sigma, strike):
+    if sigma <= 0 or t_year <= 0 or underlying <= 0 or strike <= 0:
+        return None
+    sqrt_t = math.sqrt(t_year)
+    d1 = (math.log(underlying / strike) + 0.5 * sigma * sigma * t_year) / (sigma * sqrt_t)
+    disc = math.exp(-risk_free_rate * t_year)
+    return disc * _norm_pdf(d1) / (underlying * sigma * sqrt_t)
+
+
+def _fallback_vega(underlying, risk_free_rate, t_year, sigma, strike):
+    if sigma <= 0 or t_year <= 0 or underlying <= 0 or strike <= 0:
+        return None
+    sqrt_t = math.sqrt(t_year)
+    d1 = (math.log(underlying / strike) + 0.5 * sigma * sigma * t_year) / (sigma * sqrt_t)
+    disc = math.exp(-risk_free_rate * t_year)
+    return underlying * disc * _norm_pdf(d1) * sqrt_t
+
+
+def _compute_vwap(bid1, ask1, bid_vol1, ask_vol1):
+    bid_price = _sanitize_number(bid1)
+    ask_price = _sanitize_number(ask1)
+    bid_vol = _safe_int(bid_vol1)
+    ask_vol = _safe_int(ask_vol1)
+    if bid_price is None or ask_price is None:
+        return None
+    if bid_vol is None or ask_vol is None:
+        return None
+    total_vol = bid_vol + ask_vol
+    if total_vol <= 0:
+        return None
+    return (bid_price * bid_vol + ask_price * ask_vol) / float(total_vol)
+
+
+def _iv_input_reason(option_type, underlying, strike, option_price, tte_days):
+    if option_type not in ("c", "p"):
+        return "invalid_option_type"
+    if underlying is None or underlying <= 0:
+        return "invalid_underlying"
+    if strike is None or strike <= 0:
+        return "invalid_strike"
+    if option_price is None or option_price <= 0:
+        return "invalid_option_price"
+    if tte_days is None or tte_days <= 0:
+        return "invalid_tte"
+    return "ok"
+
+
+def _fmt_debug_number(value):
+    num = _sanitize_number(value)
+    if num is None:
+        return "None"
+    return f"{num:.6g}"
+
+
+def _norm_token(value):
+    text = _sanitize_text(value)
+    if text is None:
+        return None
+    return text.lower()
+
+
+def _contract_root(contract):
+    token = _norm_token(contract)
+    if token is None:
+        return None
+    matched = re.match(r"^[a-z]+", token)
+    if matched is None:
+        return None
+    return matched.group(0)
+
+
+def _option_row_matches_focus(row, focus_symbol):
+    focus = _norm_token(focus_symbol)
+    if focus is None:
+        return False
+    contract = _norm_token(row.get("ctp_contract"))
+    underlying = _norm_token(row.get("underlying"))
+    symbol = _norm_token(row.get("symbol"))
+    return contract == focus or underlying == focus or symbol == focus
+
+
+def build_options_snapshot(rows, risk_free_rate: float):
     ts = int(time.time() * 1000)
     if not rows:
-        return {"schema_version": 1, "ts": ts, "rows": []}
+        return {"schema_version": 1, "ts": ts, "rows": []}, {
+            "options_total": 0,
+            "iv_valid": 0,
+            "vwap_valid": 0,
+            "last_fallback_used": 0,
+            "price_valid": 0,
+            "underlying_valid": 0,
+            "iv_failure_total": 0,
+            "iv_failures": {},
+            "iv_debug_samples": [],
+        }
     df = pd.DataFrame(rows)
     if df.empty or "product_class" not in df.columns:
-        return {"schema_version": 1, "ts": ts, "rows": []}
+        return {"schema_version": 1, "ts": ts, "rows": []}, {
+            "options_total": 0,
+            "iv_valid": 0,
+            "vwap_valid": 0,
+            "last_fallback_used": 0,
+            "price_valid": 0,
+            "underlying_valid": 0,
+            "iv_failure_total": 0,
+            "iv_failures": {},
+            "iv_debug_samples": [],
+        }
 
     class_tokens = df["product_class"].astype("string").str.strip()
     options_df = df[class_tokens.fillna("") == "2"].copy()
     if options_df.empty:
-        return {"schema_version": 1, "ts": ts, "rows": []}
+        return {"schema_version": 1, "ts": ts, "rows": []}, {
+            "options_total": 0,
+            "iv_valid": 0,
+            "vwap_valid": 0,
+            "last_fallback_used": 0,
+            "price_valid": 0,
+            "underlying_valid": 0,
+            "iv_failure_total": 0,
+            "iv_failures": {},
+            "iv_debug_samples": [],
+        }
 
     under_map = {}
     if "ctp_contract" in df.columns and "last" in df.columns:
         raw_under = df[["ctp_contract", "last"]].copy()
-        raw_under["ctp_contract"] = raw_under["ctp_contract"].astype("string")
-        under_map = raw_under.set_index("ctp_contract")["last"].to_dict()
+        raw_under["contract_norm"] = raw_under["ctp_contract"].astype("string").str.strip().str.lower()
+        raw_under["last"] = pd.to_numeric(raw_under["last"], errors="coerce")
+        raw_under = raw_under.dropna(subset=["contract_norm", "last"])
+        under_map = raw_under.set_index("contract_norm")["last"].to_dict()
 
     options_df["underlying"] = options_df.get("underlying", pd.Series(dtype="string")).astype("string")
-    options_df["underlying_price"] = options_df["underlying"].map(under_map)
+    options_df["underlying_norm"] = options_df["underlying"].astype("string").str.strip().str.lower()
+    options_df["underlying_price"] = options_df["underlying_norm"].map(under_map)
     options_df["option_type_cp"] = options_df.get("option_type", pd.Series(dtype="string")).map(_option_type_to_cp)
     options_df["strike"] = pd.to_numeric(options_df.get("strike"), errors="coerce")
     options_df["last"] = pd.to_numeric(options_df.get("last"), errors="coerce")
     options_df["volume"] = pd.to_numeric(options_df.get("volume"), errors="coerce")
+    options_df["bid1"] = pd.to_numeric(options_df.get("bid1"), errors="coerce")
+    options_df["ask1"] = pd.to_numeric(options_df.get("ask1"), errors="coerce")
+    options_df["bid_vol1"] = pd.to_numeric(options_df.get("bid_vol1"), errors="coerce")
+    options_df["ask_vol1"] = pd.to_numeric(options_df.get("ask_vol1"), errors="coerce")
 
     trading_date = pd.to_datetime(options_df.get("trading_date"), errors="coerce")
     expiry_date = pd.to_datetime(options_df.get("expiry_date"), errors="coerce")
@@ -194,6 +418,17 @@ def build_options_snapshot(rows, risk_free_rate: float) -> dict:
     options_df["tte"] = options_df["tte"].clip(lower=0)
 
     output_rows = []
+    diagnostics = {
+        "options_total": int(len(options_df)),
+        "iv_valid": 0,
+        "vwap_valid": 0,
+        "last_fallback_used": 0,
+        "price_valid": 0,
+        "underlying_valid": 0,
+        "iv_failure_total": 0,
+        "iv_failures": {},
+        "iv_debug_samples": [],
+    }
     for _, row in options_df.iterrows():
         contract = _sanitize_text(row.get("ctp_contract"))
         if contract is None:
@@ -202,9 +437,27 @@ def build_options_snapshot(rows, risk_free_rate: float) -> dict:
         symbol = _sanitize_text(row.get("symbol"))
         strike = _sanitize_number(row.get("strike"))
         underlying_price = _sanitize_number(row.get("underlying_price"))
-        option_price = _sanitize_number(row.get("last"))
+        option_type_raw = _sanitize_text(row.get("option_type"))
+        vwap_price = _compute_vwap(
+            row.get("bid1"),
+            row.get("ask1"),
+            row.get("bid_vol1"),
+            row.get("ask_vol1"),
+        )
+        option_price = vwap_price
+        if option_price is None:
+            option_price = _sanitize_number(row.get("last"))
+            if option_price is not None:
+                diagnostics["last_fallback_used"] += 1
+        if vwap_price is not None:
+            diagnostics["vwap_valid"] += 1
+        if option_price is not None:
+            diagnostics["price_valid"] += 1
+        if underlying_price is not None and underlying_price > 0:
+            diagnostics["underlying_valid"] += 1
         tte_days = _normalize_tte_days(row.get("tte"))
         option_type = _sanitize_text(row.get("option_type_cp"))
+        iv_reason = _iv_input_reason(option_type, underlying_price, strike, option_price, tte_days)
         iv, d, g, th, v = _compute_greeks(
             option_type=option_type,
             underlying=underlying_price,
@@ -213,23 +466,135 @@ def build_options_snapshot(rows, risk_free_rate: float) -> dict:
             tte_days=tte_days,
             risk_free_rate=risk_free_rate,
         )
+        if iv is not None:
+            diagnostics["iv_valid"] += 1
+            final_iv_reason = "ok"
+        else:
+            if not HAS_VOLLIB and iv_reason == "ok":
+                final_iv_reason = "fallback_solver_failed"
+            else:
+                final_iv_reason = iv_reason if iv_reason != "ok" else "solver_failed"
+            diagnostics["iv_failure_total"] += 1
+            diagnostics["iv_failures"][final_iv_reason] = diagnostics["iv_failures"].get(final_iv_reason, 0) + 1
+        if len(diagnostics["iv_debug_samples"]) < IV_DEBUG_SAMPLE_LIMIT:
+            diagnostics["iv_debug_samples"].append({
+                "ctp_contract": contract,
+                "option_type_raw": option_type_raw,
+                "option_type_cp": option_type,
+                "underlying_price": underlying_price,
+                "strike": strike,
+                "price_for_iv": option_price,
+                "tte_days": tte_days,
+                "iv": iv,
+                "reason": final_iv_reason,
+            })
         output_rows.append({
             "ctp_contract": contract,
             "underlying": underlying,
             "symbol": symbol,
             "strike": strike,
             "option_type": option_type,
+            "option_type_raw": option_type_raw,
             "last": option_price,
             "volume": _sanitize_number(row.get("volume")),
             "tte": tte_days,
             "underlying_price": underlying_price,
+            "price_for_iv": option_price,
             "iv": iv,
+            "iv_reason": final_iv_reason,
             "delta": d,
             "gamma": g,
             "theta": th,
             "vega": v,
         })
-    return {"schema_version": 1, "ts": ts, "rows": output_rows}
+    return {"schema_version": 1, "ts": ts, "rows": output_rows}, diagnostics
+
+
+def build_curve_snapshot(market_rows, option_rows, focus_symbol=None) -> dict:
+    ts = int(time.time() * 1000)
+    if not market_rows:
+        return {"schema_version": 1, "ts": ts, "rows": []}, {"focus_symbol": "", "focus_underlying": "", "contracts": 0}
+    df = pd.DataFrame(market_rows)
+    if df.empty:
+        return {"schema_version": 1, "ts": ts, "rows": []}, {"focus_symbol": "", "focus_underlying": "", "contracts": 0}
+    if "product_class" not in df.columns:
+        return {"schema_version": 1, "ts": ts, "rows": []}, {"focus_symbol": "", "focus_underlying": "", "contracts": 0}
+    class_tokens = df["product_class"].astype("string").str.strip()
+    futures_df = df[class_tokens.fillna("") == "1"].copy()
+    if futures_df.empty:
+        return {"schema_version": 1, "ts": ts, "rows": []}, {"focus_symbol": "", "focus_underlying": "", "contracts": 0}
+
+    options_df = pd.DataFrame(option_rows or [])
+    if not options_df.empty:
+        options_df["underlying"] = options_df.get("underlying", pd.Series(dtype="string")).astype("string")
+        options_df["underlying_norm"] = options_df["underlying"].astype("string").str.strip().str.lower()
+        options_df["iv"] = pd.to_numeric(options_df.get("iv"), errors="coerce")
+        options_df["delta"] = pd.to_numeric(options_df.get("delta"), errors="coerce")
+
+    futures_df["ctp_contract"] = futures_df.get("ctp_contract", pd.Series(dtype="string")).astype("string")
+    futures_df["contract_norm"] = futures_df["ctp_contract"].astype("string").str.strip().str.lower()
+    futures_df["underlying_norm"] = futures_df.get("underlying", pd.Series(dtype="string")).astype("string").str.strip().str.lower()
+    futures_df["symbol_norm"] = futures_df.get("symbol", pd.Series(dtype="string")).astype("string").str.strip().str.lower()
+    futures_df["last"] = pd.to_numeric(futures_df.get("last"), errors="coerce")
+    futures_df["volume"] = pd.to_numeric(futures_df.get("volume"), errors="coerce")
+    futures_df["open_interest"] = pd.to_numeric(futures_df.get("open_interest"), errors="coerce")
+    futures_df["bid1"] = pd.to_numeric(futures_df.get("bid1"), errors="coerce")
+    futures_df["ask1"] = pd.to_numeric(futures_df.get("ask1"), errors="coerce")
+    futures_df["bid_vol1"] = pd.to_numeric(futures_df.get("bid_vol1"), errors="coerce")
+    futures_df["ask_vol1"] = pd.to_numeric(futures_df.get("ask_vol1"), errors="coerce")
+    futures_df = futures_df.dropna(subset=["contract_norm", "last"])
+
+    focus_norm = _norm_token(focus_symbol)
+    focus_underlying = None
+    if focus_norm is not None:
+        focus_rows = futures_df[futures_df["contract_norm"] == focus_norm]
+        if not focus_rows.empty:
+            focus_row = focus_rows.iloc[0]
+            focus_underlying = _norm_token(focus_row.get("underlying_norm"))
+            if focus_underlying is None or focus_underlying == "":
+                focus_underlying = _norm_token(focus_row.get("symbol_norm"))
+            if focus_underlying is None or focus_underlying == "":
+                focus_underlying = _contract_root(focus_norm)
+        if focus_underlying is not None and focus_underlying != "":
+            futures_df = futures_df[
+                (futures_df["underlying_norm"] == focus_underlying) |
+                (futures_df["symbol_norm"] == focus_underlying)
+            ]
+        else:
+            futures_df = futures_df[futures_df["contract_norm"] == focus_norm]
+
+    futures_df = futures_df.sort_values(by="ctp_contract", kind="stable")
+
+    rows_out = []
+    for _, fut in futures_df.iterrows():
+        contract = _sanitize_text(fut.get("ctp_contract"))
+        forward = _sanitize_number(fut.get("last"))
+        if contract is None or forward is None:
+            continue
+        vix_value = None
+        if not options_df.empty:
+            chain = options_df[options_df["underlying_norm"] == _norm_token(contract)]
+            if not chain.empty:
+                chain = chain[chain["iv"].notna() & chain["delta"].notna()]
+                chain = chain[chain["delta"].abs() <= 0.25]
+                if not chain.empty:
+                    vix_value = _sanitize_number(chain["iv"].mean())
+        rows_out.append({
+            "ctp_contract": contract,
+            "forward": forward,
+            "volume": _sanitize_number(fut.get("volume")),
+            "open_interest": _sanitize_number(fut.get("open_interest")),
+            "bid_vol1": _sanitize_number(fut.get("bid_vol1")),
+            "bid1": _sanitize_number(fut.get("bid1")),
+            "ask1": _sanitize_number(fut.get("ask1")),
+            "ask_vol1": _sanitize_number(fut.get("ask_vol1")),
+            "vix": vix_value,
+        })
+    return {"schema_version": 1, "ts": ts, "rows": rows_out}, {
+        "focus_symbol": focus_norm or "",
+        "focus_underlying": focus_underlying or "",
+        "contracts": len(rows_out),
+    }
 
 
 def parse_args() -> argparse.Namespace:
@@ -246,9 +611,17 @@ def main() -> int:
         log(f"invalid router_addr: {args.router_addr}")
         return 2
     if not HAS_VOLLIB:
-        log("py_vollib unavailable; options worker will publish rows with null greeks")
+        log("py_vollib unavailable; options worker will use fallback iv solver")
     last_seq = 0
     req_id = 1
+    loop_count = 0
+    backoff_seconds = POLL_INTERVAL_SECONDS
+    cached_market_rows = []
+    cached_option_rows = []
+    last_curve_focus = None
+    _safe_append_log(router_target, "INFO", "options_worker", "options worker started")
+    if not HAS_VOLLIB:
+        _safe_append_log(router_target, "WARN", "options_worker", "py_vollib unavailable; using fallback iv solver")
     while True:
         try:
             result = _rpc_call(
@@ -261,23 +634,110 @@ def main() -> int:
             if not isinstance(result, dict):
                 time.sleep(POLL_INTERVAL_SECONDS)
                 continue
+            ui_state = _rpc_call(router_target, "router.get_ui_state", {}, req_id)
+            req_id += 1
+            if not isinstance(ui_state, dict):
+                ui_state = {}
+            focus_symbol = _sanitize_text(ui_state.get("focus_symbol"))
+            focus_norm = _norm_token(focus_symbol)
             if result.get("unchanged"):
+                if focus_norm != last_curve_focus and cached_market_rows:
+                    curve_snapshot, _ = build_curve_snapshot(
+                        cached_market_rows,
+                        cached_option_rows,
+                        focus_symbol=focus_symbol,
+                    )
+                    _rpc_notify(router_target, "curve.snapshot", curve_snapshot)
+                    last_curve_focus = focus_norm
                 time.sleep(POLL_INTERVAL_SECONDS)
                 continue
             seq = result.get("seq")
+            next_seq = last_seq
             if isinstance(seq, (int, float)):
-                last_seq = int(seq)
+                next_seq = int(seq)
             rows = result.get("rows", [])
-            _ = _rpc_call(router_target, "router.get_ui_state", {}, req_id)
-            req_id += 1
-            options_snapshot = build_options_snapshot(rows, args.risk_free_rate)
+            if not isinstance(rows, list):
+                rows = []
+            options_snapshot, diagnostics = build_options_snapshot(rows, args.risk_free_rate)
+            next_market_rows = rows
+            next_option_rows = options_snapshot.get("rows", []) or []
+            curve_snapshot, curve_diag = build_curve_snapshot(
+                next_market_rows,
+                next_option_rows,
+                focus_symbol=focus_symbol,
+            )
             _rpc_notify(router_target, "options.snapshot", options_snapshot)
+            _rpc_notify(router_target, "curve.snapshot", curve_snapshot)
+            cached_market_rows = next_market_rows
+            cached_option_rows = next_option_rows
+            last_curve_focus = focus_norm
+            last_seq = next_seq
+            loop_count += 1
+            backoff_seconds = POLL_INTERVAL_SECONDS
+            if loop_count == 1 or loop_count % HEALTH_LOG_INTERVAL == 0:
+                failure_parts = []
+                for key in sorted(diagnostics.get("iv_failures", {}).keys()):
+                    failure_parts.append(f"{key}:{diagnostics['iv_failures'][key]}")
+                failure_text = ",".join(failure_parts) if failure_parts else "-"
+                _safe_append_log(
+                    router_target,
+                    "INFO",
+                    "options_worker",
+                    (
+                        "options snapshot total={options_total} iv_valid={iv_valid} "
+                        "price_valid={price_valid} vwap_valid={vwap_valid} "
+                        "fallback_last={last_fallback_used} underlying_valid={underlying_valid} "
+                        "iv_fail_total={iv_failure_total} iv_failures={iv_failures} "
+                        "focus={focus} curve_under={curve_under} curve_contracts={curve_contracts} "
+                        "has_vollib={has_vollib}"
+                    ).format(
+                        options_total=diagnostics.get("options_total", 0),
+                        iv_valid=diagnostics.get("iv_valid", 0),
+                        price_valid=diagnostics.get("price_valid", 0),
+                        vwap_valid=diagnostics.get("vwap_valid", 0),
+                        last_fallback_used=diagnostics.get("last_fallback_used", 0),
+                        underlying_valid=diagnostics.get("underlying_valid", 0),
+                        iv_failure_total=diagnostics.get("iv_failure_total", 0),
+                        iv_failures=failure_text,
+                        focus=curve_diag.get("focus_symbol", ""),
+                        curve_under=curve_diag.get("focus_underlying", ""),
+                        curve_contracts=curve_diag.get("contracts", 0),
+                        has_vollib=1 if HAS_VOLLIB else 0,
+                    ),
+                )
+                debug_rows = options_snapshot.get("rows", []) or []
+                if focus_symbol is not None and focus_symbol != "":
+                    focused_rows = [row for row in debug_rows if _option_row_matches_focus(row, focus_symbol)]
+                    if focused_rows:
+                        debug_rows = focused_rows
+                for sample in debug_rows[:IV_DEBUG_SAMPLE_LIMIT]:
+                    _safe_append_log(
+                        router_target,
+                        "DEBUG",
+                        "options_worker",
+                        (
+                            "iv_debug contract={contract} cp_raw={cp_raw} cp={cp} "
+                            "S={underlying} K={strike} px={price} tte={tte} iv={iv} reason={reason}"
+                        ).format(
+                            contract=sample.get("ctp_contract") or "-",
+                            cp_raw=sample.get("option_type_raw") or "-",
+                            cp=sample.get("option_type") or "-",
+                            underlying=_fmt_debug_number(sample.get("underlying_price")),
+                            strike=_fmt_debug_number(sample.get("strike")),
+                            price=_fmt_debug_number(sample.get("price_for_iv")),
+                            tte=_fmt_debug_number(sample.get("tte")),
+                            iv=_fmt_debug_number(sample.get("iv")),
+                            reason=sample.get("iv_reason") or "-",
+                        ),
+                    )
         except KeyboardInterrupt:
             log("options worker interrupted")
             return 0
         except Exception as exc:
             log(f"options worker loop error: {exc}")
-            time.sleep(POLL_INTERVAL_SECONDS)
+            _safe_append_log(router_target, "ERROR", "options_worker", f"loop error: {exc}")
+            time.sleep(backoff_seconds)
+            backoff_seconds = min(backoff_seconds * 2, MAX_BACKOFF_SECONDS)
 
 
 if __name__ == "__main__":

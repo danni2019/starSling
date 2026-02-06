@@ -86,9 +86,50 @@ func TestRouterMarketSnapshotRoundTrip(t *testing.T) {
 	if len(filtered.Options.Rows) != 1 {
 		t.Fatalf("expected 1 option row for focus, got %d", len(filtered.Options.Rows))
 	}
+	if err := client.Notify(context.Background(), "curve.snapshot", CurveSnapshot{
+		SchemaVersion: 1,
+		TS:            time.Now().UnixMilli(),
+		Rows:          []map[string]any{{"ctp_contract": "cu2604", "forward": 104550.0, "vix": 0.2}},
+	}); err != nil {
+		t.Fatalf("notify curve.snapshot: %v", err)
+	}
+	if err := client.Notify(context.Background(), "unusual.snapshot", UnusualSnapshot{
+		SchemaVersion: 1,
+		TS:            time.Now().UnixMilli(),
+		Rows:          []map[string]any{{"ctp_contract": "cu2604C72000", "turnover_chg": 120000.0, "turnover_ratio": 0.1}},
+	}); err != nil {
+		t.Fatalf("notify unusual.snapshot: %v", err)
+	}
+	if err := client.Notify(context.Background(), "log.append", LogLine{
+		TS:      time.Now().UnixMilli(),
+		Level:   "INFO",
+		Source:  "worker",
+		Message: "test log",
+	}); err != nil {
+		t.Fatalf("notify log.append: %v", err)
+	}
+	var withSections ViewSnapshot
+	if err := client.Call(context.Background(), "router.get_view_snapshot", GetViewSnapshotParams{}, &withSections); err != nil {
+		t.Fatalf("get_view_snapshot full sections: %v", err)
+	}
+	if len(withSections.Curve.Rows) != 1 {
+		t.Fatalf("expected 1 curve row, got %d", len(withSections.Curve.Rows))
+	}
+	if len(withSections.Unusual.Rows) != 1 {
+		t.Fatalf("expected 1 unusual row, got %d", len(withSections.Unusual.Rows))
+	}
+	if len(withSections.Logs.Items) == 0 {
+		t.Fatalf("expected log items")
+	}
 
 	if err := client.Call(context.Background(), "ui.set_focus_symbol", SetFocusSymbolParams{Symbol: "cu2604"}, nil); err != nil {
 		t.Fatalf("ui.set_focus_symbol: %v", err)
+	}
+	if err := client.Call(context.Background(), "ui.set_unusual_threshold", SetUnusualThresholdParams{
+		TurnoverChgThreshold:   200000,
+		TurnoverRatioThreshold: 0.2,
+	}, nil); err != nil {
+		t.Fatalf("ui.set_unusual_threshold: %v", err)
 	}
 	var uiState UIState
 	if err := client.Call(context.Background(), "router.get_ui_state", map[string]any{}, &uiState); err != nil {
@@ -96,6 +137,12 @@ func TestRouterMarketSnapshotRoundTrip(t *testing.T) {
 	}
 	if uiState.FocusSymbol != "cu2604" {
 		t.Fatalf("unexpected focus symbol: %q", uiState.FocusSymbol)
+	}
+	if uiState.TurnoverChgThreshold != 200000 {
+		t.Fatalf("unexpected threshold chg: %v", uiState.TurnoverChgThreshold)
+	}
+	if uiState.TurnoverRatioThreshold != 0.2 {
+		t.Fatalf("unexpected threshold ratio: %v", uiState.TurnoverRatioThreshold)
 	}
 }
 

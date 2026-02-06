@@ -1,15 +1,11 @@
 package tui
 
 import (
-	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
-
-	"github.com/danni2019/starSling/internal/router"
 )
 
 func (ui *UI) buildLiveScreen() tview.Primitive {
@@ -31,11 +27,9 @@ func (ui *UI) buildLiveScreen() tview.Primitive {
 		if symbol == "" {
 			return
 		}
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-			_ = ui.rpcClient.Call(ctx, "ui.set_focus_symbol", router.SetFocusSymbolParams{Symbol: symbol}, nil)
-		}()
+		ui.focusSymbol = symbol
+		ui.focusSyncPending = false
+		ui.pushFocusSymbol(symbol)
 	})
 
 	ui.liveLog = tview.NewTextView()
@@ -48,21 +42,23 @@ func (ui *UI) buildLiveScreen() tview.Primitive {
 	ui.liveCurve = tview.NewTextView()
 	ui.liveCurve.SetTextColor(colorMuted)
 	ui.liveCurve.SetBackgroundColor(colorBackground)
-	ui.liveCurve.SetBorder(true).SetTitle("Forward curve + VIX (2nd axis)")
+	ui.liveCurve.SetBorder(true).SetTitle("VIX + forward curve")
 	ui.liveCurve.SetBorderColor(colorBorder).SetTitleColor(colorBorder)
-	ui.liveCurve.SetText(renderChartPlaceholder())
+	ui.liveCurve.SetText("Waiting for curve snapshot...")
 
 	ui.liveOpts = tview.NewTextView()
 	ui.liveOpts.SetTextColor(colorMuted)
 	ui.liveOpts.SetBackgroundColor(colorBackground)
-	ui.liveOpts.SetBorder(true).SetTitle("Options chain (IV curve / OI / Greeks)")
+	ui.liveOpts.SetScrollable(true)
+	ui.liveOpts.SetWrap(false)
+	ui.liveOpts.SetBorder(true).SetTitle("Options T-quote")
 	ui.liveOpts.SetBorderColor(colorBorder).SetTitleColor(colorBorder)
-	ui.liveOpts.SetText(renderChartPlaceholder())
+	ui.liveOpts.SetText("Waiting for options snapshot...")
 
 	ui.liveTrades = tview.NewTable()
 	ui.liveTrades.SetSelectable(false, false)
 	ui.liveTrades.SetFixed(1, 0)
-	ui.liveTrades.SetBorder(true).SetTitle("Unusual option trades (newest at top)")
+	ui.liveTrades.SetBorder(true).SetTitle("Unusual option volume (newest at top)")
 	ui.liveTrades.SetBorderColor(colorBorder).SetTitleColor(colorBorder)
 
 	left := tview.NewFlex().SetDirection(tview.FlexRow).
@@ -75,8 +71,8 @@ func (ui *UI) buildLiveScreen() tview.Primitive {
 		AddItem(ui.liveTrades, 0, 1, false)
 
 	root := tview.NewFlex().
-		AddItem(left, 0, 3, true).
-		AddItem(right, 0, 2, false)
+		AddItem(left, 0, 6, true).
+		AddItem(right, 0, 4, false)
 
 	root.SetBackgroundColor(colorBackground)
 
@@ -88,11 +84,9 @@ func (ui *UI) buildLiveScreen() tview.Primitive {
 		ui.liveLog,
 	}
 	ui.focusIndex = 0
-	ui.updateLiveData()
-	for _, line := range ui.data.Logs {
-		ui.appendLiveLogLine(line.Message)
-	}
-	ui.liveOpts.SetText("Waiting for options snapshot...")
+	fillMarketTable(ui.liveMarket, nil)
+	fillTradesTable(ui.liveTrades, nil)
+	ui.liveLog.SetText("Waiting for runtime logs...")
 
 	return root
 }
@@ -108,9 +102,9 @@ func (ui *UI) updateLiveData() {
 
 func fillMarketTable(table *tview.Table, rows []MarketRow) {
 	table.Clear()
-	headers := []string{"SYMBOL", "LAST", "CHG", "BID", "ASK", "VOL", "OI", "TS"}
+	headers := []string{"CONTRACT", "EXCH", "LAST", "CHG", "BID", "ASK", "VOL", "TURNOVER", "OI", "OI_CHG%", "TS"}
 	for col, label := range headers {
-		cell := tview.NewTableCell(label).
+		cell := tview.NewTableCell(padTableCell(label)).
 			SetTextColor(colorTableHeader).
 			SetAlign(tview.AlignLeft).
 			SetSelectable(false)
@@ -118,9 +112,9 @@ func fillMarketTable(table *tview.Table, rows []MarketRow) {
 	}
 
 	for i, row := range rows {
-		values := []string{row.Symbol, row.Last, row.Chg, row.Bid, row.Ask, row.Vol, row.OI, row.TS}
+		values := []string{row.Symbol, row.Exchange, row.Last, row.Chg, row.Bid, row.Ask, row.Vol, row.Turnover, row.OI, row.OIChgPct, row.TS}
 		for col, value := range values {
-			cell := tview.NewTableCell(value).
+			cell := tview.NewTableCell(padTableCell(value)).
 				SetTextColor(colorTableRow).
 				SetAlign(tview.AlignLeft)
 			table.SetCell(i+1, col, cell)
@@ -130,9 +124,9 @@ func fillMarketTable(table *tview.Table, rows []MarketRow) {
 
 func fillTradesTable(table *tview.Table, trades []TradeRow) {
 	table.Clear()
-	headers := []string{"TIME", "SYM", "CP", "K", "PX", "SZ", "IV", "TAG"}
+	headers := []string{"TIME", "CONTRACT", "CP", "K", "TTE", "PX", "CHG", "RATIO", "TAG"}
 	for col, label := range headers {
-		cell := tview.NewTableCell(label).
+		cell := tview.NewTableCell(padTableCell(label)).
 			SetTextColor(colorTableHeader).
 			SetAlign(tview.AlignLeft).
 			SetSelectable(false)
@@ -140,14 +134,22 @@ func fillTradesTable(table *tview.Table, trades []TradeRow) {
 	}
 
 	for i, trade := range trades {
-		values := []string{trade.Time, trade.Sym, trade.CP, trade.Strike, trade.Price, trade.Size, trade.IV, trade.Tag}
+		values := []string{trade.Time, trade.Sym, trade.CP, trade.Strike, trade.TTE, trade.Price, trade.Size, trade.IV, trade.Tag}
 		for col, value := range values {
-			cell := tview.NewTableCell(value).
+			cell := tview.NewTableCell(padTableCell(value)).
 				SetTextColor(colorTableRow).
 				SetAlign(tview.AlignLeft)
 			table.SetCell(i+1, col, cell)
 		}
 	}
+}
+
+func padTableCell(value string) string {
+	text := strings.TrimSpace(value)
+	if len(text) < unifiedColumnWidth {
+		return fmt.Sprintf("%-*s", unifiedColumnWidth, text)
+	}
+	return text
 }
 
 func fillLog(view *tview.TextView, logs []LogLine) {

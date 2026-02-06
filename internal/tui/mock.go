@@ -3,14 +3,17 @@ package tui
 import "time"
 
 type MarketRow struct {
-	Symbol string
-	Last   string
-	Chg    string
-	Bid    string
-	Ask    string
-	Vol    string
-	OI     string
-	TS     string
+	Symbol   string
+	Exchange string
+	Last     string
+	Chg      string
+	Bid      string
+	Ask      string
+	Vol      string
+	Turnover string
+	OI       string
+	OIChgPct string
+	TS       string
 }
 
 type TradeRow struct {
@@ -18,6 +21,7 @@ type TradeRow struct {
 	Sym    string
 	CP     string
 	Strike string
+	TTE    string
 	Price  string
 	Size   string
 	IV     string
@@ -38,18 +42,18 @@ type MockData struct {
 func mockData() MockData {
 	return MockData{
 		MarketRows: []MarketRow{
-			{Symbol: "ag2604", Last: "31490", Chg: "+120", Bid: "31480", Ask: "31500", Vol: "9.2k", OI: "82k", TS: "21:07:13"},
-			{Symbol: "ag2605", Last: "31340", Chg: "+80", Bid: "31330", Ask: "31350", Vol: "6.1k", OI: "75k", TS: "21:07:13"},
-			{Symbol: "ag2606", Last: "31210", Chg: "+40", Bid: "31200", Ask: "31220", Vol: "4.9k", OI: "68k", TS: "21:07:12"},
-			{Symbol: "au2604", Last: "482.10", Chg: "+1.25", Bid: "482.05", Ask: "482.15", Vol: "3.4k", OI: "41k", TS: "21:07:12"},
-			{Symbol: "sc2603", Last: "502.6", Chg: "+4.8", Bid: "502.5", Ask: "502.7", Vol: "12.7k", OI: "66k", TS: "21:07:12"},
-			{Symbol: "cu2603", Last: "72840", Chg: "+210", Bid: "72830", Ask: "72850", Vol: "8.9k", OI: "93k", TS: "21:07:11"},
+			{Symbol: "ag2604", Exchange: "SHFE", Last: "31490", Chg: "+120", Bid: "31480", Ask: "31500", Vol: "9.2k", Turnover: "289400000", OI: "82k", OIChgPct: "+1.6%", TS: "21:07:13"},
+			{Symbol: "ag2605", Exchange: "SHFE", Last: "31340", Chg: "+80", Bid: "31330", Ask: "31350", Vol: "6.1k", Turnover: "191300000", OI: "75k", OIChgPct: "+0.9%", TS: "21:07:13"},
+			{Symbol: "ag2606", Exchange: "SHFE", Last: "31210", Chg: "+40", Bid: "31200", Ask: "31220", Vol: "4.9k", Turnover: "153200000", OI: "68k", OIChgPct: "+0.4%", TS: "21:07:12"},
+			{Symbol: "au2604", Exchange: "SHFE", Last: "482.10", Chg: "+1.25", Bid: "482.05", Ask: "482.15", Vol: "3.4k", Turnover: "164100000", OI: "41k", OIChgPct: "-0.3%", TS: "21:07:12"},
+			{Symbol: "sc2603", Exchange: "INE", Last: "502.6", Chg: "+4.8", Bid: "502.5", Ask: "502.7", Vol: "12.7k", Turnover: "638900000", OI: "66k", OIChgPct: "+2.1%", TS: "21:07:12"},
+			{Symbol: "cu2603", Exchange: "SHFE", Last: "72840", Chg: "+210", Bid: "72830", Ask: "72850", Vol: "8.9k", Turnover: "648300000", OI: "93k", OIChgPct: "+1.2%", TS: "21:07:11"},
 		},
 		Trades: []TradeRow{
-			{Time: "21:07:13", Sym: "AG2604", CP: "P", Strike: "31000", Price: "82", Size: "120", IV: "0.46", Tag: ""},
-			{Time: "21:07:12", Sym: "AG2604", CP: "C", Strike: "32000", Price: "55", Size: "300", IV: "0.42", Tag: ""},
-			{Time: "21:07:11", Sym: "AG2605", CP: "P", Strike: "30000", Price: "90", Size: "80", IV: "0.51", Tag: ""},
-			{Time: "21:07:10", Sym: "AG2604", CP: "C", Strike: "33000", Price: "33", Size: "500", IV: "0.39", Tag: ""},
+			{Time: "21:07:13", Sym: "AG2604", CP: "P", Strike: "31000", TTE: "42", Price: "82", Size: "120", IV: "0.46", Tag: ""},
+			{Time: "21:07:12", Sym: "AG2604", CP: "C", Strike: "32000", TTE: "42", Price: "55", Size: "300", IV: "0.42", Tag: ""},
+			{Time: "21:07:11", Sym: "AG2605", CP: "P", Strike: "30000", TTE: "56", Price: "90", Size: "80", IV: "0.51", Tag: ""},
+			{Time: "21:07:10", Sym: "AG2604", CP: "C", Strike: "33000", TTE: "42", Price: "33", Size: "500", IV: "0.39", Tag: ""},
 		},
 		Logs: []LogLine{
 			{Time: "21:07:10", Message: "session-check: connected (gateway ok)"},
@@ -67,7 +71,7 @@ func (d MockData) Tick() MockData {
 	if len(d.Logs) > 8 {
 		d.Logs = d.Logs[:8]
 	}
-	d.Trades = append([]TradeRow{{Time: now, Sym: "AG2604", CP: "P", Strike: "31000", Price: "84", Size: "60", IV: "0.45", Tag: ""}}, d.Trades...)
+	d.Trades = append([]TradeRow{{Time: now, Sym: "AG2604", CP: "P", Strike: "31000", TTE: "42", Price: "84", Size: "60", IV: "0.45", Tag: ""}}, d.Trades...)
 	if len(d.Trades) > 8 {
 		d.Trades = d.Trades[:8]
 	}

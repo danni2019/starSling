@@ -447,3 +447,32 @@
 - [x] UI 左上 market 已支持 Enter 弹窗进行筛选/排序（exchange/product_class/symbol + sort_by/order）。
 - [ ] 左下 logs 与右上/右下 section 的真实 worker 数据链路仍待接入。
 - [ ] 断线重连/backoff 与 stale 行为通过 E2E smoke。
+
+
+### 右侧区域设计基础
+- 右上：VIX curve + forward Curve ｜ 对应option_worker
+  - X轴：期货合约，从左至右升序
+  - VIX：underlying期货合约的VIX = 该期货合约对应期权链所有delta绝对值小于 0.25 的期权IV的均值
+  - forward curve: 各个期货合约的现价 last
+  - 是否提供Enter键弹出二级窗口：不支持
+
+- 右中：IV curve + Volume Bar | 对应option_worker
+  - X轴：期权strike，从左至右升序
+  - IV：期权当前的vwap价格对应的IV，利用以下四个字段计算vwap：
+      'bid1' -- float,
+      'ask1' -- float,
+      'bid_vol1' -- int,
+      'ask_vol1' -- int,
+  - Volume： 期权当前的成交量volume
+  - 是否提供Enter键弹出二级窗口：不支持
+
+- 右下：异常成交 Unusual Volume ｜ 对应unusual_worker
+  - 针对期权合约的异常成交监控
+  - 信息窗独立刷新（最新在最上）
+  - 因为行情字段中的volume, turnover都是当日累计值，所以unusual worker里必须保存一个上一帧的行情数据用来计算差值
+  - 虽然名称是Volume，但实际上是通过turnover来计算异常成交
+  - 计算方式：
+      turnover_chg = turnover(current_frame) - turnover(prev_frame)
+      turnover_ratio = turnover(current_frame) / turnover(prev_frame) - 1
+  - 展示方式：如果以上两项均超过了设定的threshold，则展示在窗口内，否则忽略
+  - 是否提供Enter键弹出二级窗口：支持。二级窗口用来设置以上两项的阈值。

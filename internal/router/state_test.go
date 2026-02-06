@@ -95,3 +95,23 @@ func TestFilterOptionsRowsCaseInsensitive(t *testing.T) {
 		t.Fatalf("expected 1 filtered row by contract, got %d", len(filtered))
 	}
 }
+
+func TestStateThresholdUpdate(t *testing.T) {
+	state := NewState()
+	uiState := state.GetUIState()
+	if uiState.TurnoverChgThreshold != 100000.0 {
+		t.Fatalf("unexpected default chg threshold: %v", uiState.TurnoverChgThreshold)
+	}
+	if uiState.TurnoverRatioThreshold != 0.05 {
+		t.Fatalf("unexpected default ratio threshold: %v", uiState.TurnoverRatioThreshold)
+	}
+
+	state.SetUnusualThresholds(200000, 0.1)
+	uiState = state.GetUIState()
+	if uiState.TurnoverChgThreshold != 200000 {
+		t.Fatalf("unexpected updated chg threshold: %v", uiState.TurnoverChgThreshold)
+	}
+	if uiState.TurnoverRatioThreshold != 0.1 {
+		t.Fatalf("unexpected updated ratio threshold: %v", uiState.TurnoverRatioThreshold)
+	}
+}
