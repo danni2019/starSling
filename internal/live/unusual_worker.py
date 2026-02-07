@@ -99,7 +99,7 @@ def _compute_tte_days(row):
         trading = _parse_date(row.get("datetime"))
     if trading is None:
         return None
-    delta_days = (expiry - trading).days
+    delta_days = (expiry - trading).days + 1
     if delta_days < 0:
         delta_days = 0
     return float(delta_days)

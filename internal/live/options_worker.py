@@ -414,7 +414,7 @@ def build_options_snapshot(rows, risk_free_rate: float):
 
     trading_date = pd.to_datetime(options_df.get("trading_date"), errors="coerce")
     expiry_date = pd.to_datetime(options_df.get("expiry_date"), errors="coerce")
-    options_df["tte"] = (expiry_date - trading_date).dt.days
+    options_df["tte"] = (expiry_date - trading_date).dt.days + 1
     options_df["tte"] = options_df["tte"].clip(lower=0)
 
     output_rows = []

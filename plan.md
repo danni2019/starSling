@@ -21,21 +21,22 @@
 
   * 维护最新快照缓存（market/curve/options/unusual/log）
   * 提供 JSON-RPC server：UI/worker 拉取最新数据；接收 live_md/worker 推送结果
-  * 维护 UI 的共享控制状态（仅 `focus_symbol`）
+  * 维护 UI 的共享控制状态（`focus_symbol` + `turnover_chg_threshold`/`turnover_ratio_threshold`）
 * `live_md`（Python）：
 
   * 从行情源（未来 CTP）生成 `MarketSnapshot`（500ms）
   * 通过 JSON-RPC notification 推送给 router
-* `py_worker_*`（Python，多进程，可扩展）：
+* `py_worker_*`（Python，多进程，可扩展；当前已有 options_worker / unusual_worker）：
 
   * 向 router **拉取**最新 `MarketSnapshot`（不堆积）
-  * 读取 router 中的 `focus_symbol`（用于决定计算范围）
+  * 读取 router 中的 `UIState`（`focus_symbol` + unusual 阈值）
   * 产出派生快照（curve/options/unusual/log）并推送 router
 * `tui`（Go UI）：
 
   * 每 500ms（或 1s）向 router 拉取 `ViewSnapshot`
   * 对比 section `seq`，仅更新变化的 section（section diff）
   * 高频操作：用户在行情表中改变选中合约时，调用 `SetFocusSymbol` 写入 router
+  * 进入 live 界面时启动 live_md / options_worker / unusual_worker
 
 ---
 
@@ -53,13 +54,14 @@
 
   1. 调用 `GetLatestMarket()` 获取最新 market（带 `seq/ts`）
   2. 如与上次处理的 `seq` 相同，则 sleep（避免重复算）
-  3. 读取 `GetUIState()`（至少含 `focus_symbol`）
+  3. 读取 `GetUIState()`（`focus_symbol` + unusual 阈值）
   4. 进行派生计算（允许耗时；不追赶旧数据）
   5. 通过 notification `curve.snapshot/options.snapshot/unusual.snapshot/log.append` 推送 router
 * router 行为：
 
-  * 对 curve/options：按 symbol 覆盖式缓存 `latest_curve[symbol]` / `latest_options[symbol]`
-  * unusual/log：维护 ring buffer（有上限），但 UI 仍按 tick 拉取
+  * curve/options/unusual：仅保留最新快照（单份）；options 在 `GetViewSnapshot` 中按 focus_symbol 过滤 rows
+  * unusual 历史由 worker 维护（rows 最新在前）
+  * logs：维护 ring buffer（有上限）
 
 ### 2.3 UI <- router（Poll + Section Diff）
 
@@ -95,8 +97,9 @@
 
 * router 不可达（UI/worker/live_md 任一端）：
 
-  * 指数退避重连：`0.5s -> 1s -> 2s -> 4s`，上限 `5s`
-  * 不退出主程序；UI 显示 `router disconnected` 状态
+  * worker 已实现指数退避重连：`0.5s -> 1s -> 2s -> 4s`，上限 `5s`
+  * UI/live_md 目前为固定周期重试（无指数退避），失败写入运行日志
+  * 不退出主程序；UI 继续显示上一次画面
 * live_md 推送中断：
 
   * router 保留最后一帧 `market`，并在 `ViewSnapshot.market` 标记 `stale=true`
@@ -108,7 +111,7 @@
 * 超时约束：
 
   * JSON-RPC request 默认 timeout `2s`
-  * 连续 `N=3` 次 timeout 后在日志中升级为 warn（带 endpoint/method）
+  * 连续 `N=3` 次 timeout 后在日志中升级为 warn（带 endpoint/method，尚未实现）
 
 ---
 
@@ -118,7 +121,7 @@
 >
 > * notification：无 id（不需要 response），用于 push
 > * request/response：用于 pull 与 UI 控制
-> * 全部消息都包含 `schema_version`，所有 snapshot 都包含 `ts` 与 `seq`
+> * snapshot payloads 包含 `schema_version` + `ts`；`seq` 由 router 赋值并返回给 UI
 
 ### 3.1 live_md -> router（notification）
 
@@ -134,6 +137,7 @@
 ### 3.3 UI -> router（request/response）
 
 * `ui.set_focus_symbol` (params: {symbol}) -> {ok}
+* `ui.set_unusual_threshold` (params: {turnover_chg_threshold, turnover_ratio_threshold}) -> {ok}
 * （本期不需要 set_sort_spec，排序仅在 UI 本地生效）
 
 ### 3.4 UI/worker <- router（request/response）
@@ -141,7 +145,7 @@
 * `router.get_latest_market` (params: {min_seq?}) -> MarketSnapshot
 
   * `min_seq` 可选：若当前最新 seq <= min_seq，则返回 {unchanged:true, seq:latest}（减少 payload）
-* `router.get_ui_state` -> UIState {focus_symbol}
+* `router.get_ui_state` -> UIState {focus_symbol, turnover_chg_threshold, turnover_ratio_threshold}
 * `router.get_view_snapshot` (params: {focus_symbol, limits}) -> ViewSnapshot
 
 ---
@@ -153,44 +157,40 @@
 * `schema_version`: int
 * `ts`: int64（**固定为毫秒级 epoch**）
 * `seq`: int64（**由 router 为每个 section 统一单调递增**）
+* `stale`?: bool（仅 router -> UI 返回时存在）
 
 ### 4.2 MarketSnapshot（用于左上行情表）
 
-* `row_key`: string（例如 "symbol"，用于稳定选中）
+* `row_key`: string（固定为 "ctp_contract"，用于稳定选中）
 * `columns`: []string（固定顺序）
 * `rows`: []object（每行按 columns 提供字段；数值可为 number 或 string）
 
 ### 4.3 CurveSnapshot（右上）
 
-* `symbol`: string
-* `points`: [{x, y}]（期货曲线）
-* `vix_points`?: [{x, y}]（可选第二轴）
+* `rows`: [{ctp_contract, forward, vix, volume?, open_interest?, bid1?, ask1?, bid_vol1?, ask_vol1?}]
 
 ### 4.4 OptionsSnapshot（右中）
 
-* `symbol`: string
-* `iv_curve`: [{k, iv}]
-* `oi_summary`?: object
-* `extra`?: object（占位）
+* `rows`: [{ctp_contract, underlying, symbol, strike, option_type, last, volume, tte, underlying_price, iv, delta, gamma, theta, vega, iv_reason, price_for_iv}]
 
 ### 4.5 UnusualSnapshot（右下滚动信息窗）
 
-* `symbol`: string
-* `items`: [{ts, symbol, cp, strike, price, size, iv, tag}]
-* 语义：items 必须“最新在前”（push-front）。UI 只做渲染/裁剪，不重排。
+* `rows`: [{ts, time, ctp_contract, symbol, underlying, cp, strike, tte, price, volume, turnover, turnover_chg, turnover_ratio}]
+* 语义：rows 必须“最新在前”（push-front）；历史由 worker 维护，UI 只做渲染/裁剪。
 
 ### 4.6 LogAppend / LogSnapshot（左下）
 
-* append：{ts, level, source, msg}
+* append：{ts, level, source, message}
 * router 内部维护 ring buffer；在 ViewSnapshot 中返回最近 N 条。
 
 ### 4.7 ViewSnapshot（UI poll 返回）
 
-* `market`: MarketSnapshot
-* `curve`: CurveSnapshot?（基于 focus_symbol；无则为空）
-* `options`: OptionsSnapshot?（基于 focus_symbol；无则为空）
-* `unusual`: UnusualSnapshot?（基于 focus_symbol；无则为空）
+* `market`: MarketSnapshot（ViewSnapshot 中会过滤掉期权行）
+* `curve`: CurveSnapshot?（由 worker 基于 focus_symbol 计算；无则为空）
+* `options`: OptionsSnapshot?（按 focus_symbol 过滤 rows；无则为空）
+* `unusual`: UnusualSnapshot?（无则为空）
 * `logs`: {seq, items:[...]}（最近 N 条）
+* 每个 section 可带 `stale`，由 router 根据最后更新时间标记。
 
 ### 4.8 序列化规则（强约束）
 
@@ -217,19 +217,20 @@
 * UI 维护 `sort_spec = {sort_by, order}`（仅本地）
 * UI 每次 tick poll `ViewSnapshot` 后：
 
-  * 对 market.rows 在 UI 内排序（数值列按 numeric 比较，字符串列按字典序）
+  * 对 market.rows 在 UI 内排序（两侧值可转为 float 则按数值比较，否则按字符串比较）
   * 列宽策略：固定或平滑自适应（防抖动）
 * sort_spec **不写入 router**；仅 `focus_symbol` 反向传播给 router/worker。
 
 ### 5.1 默认排序与比较规则（已定版）
 
 * 默认排序：`sort_by=volume`，`order=desc`
-* 数值列白名单（按 float/int 比较）：
-
-  * `last/pre_settlement/pre_close/open/high/low/turnover/close/settlement/limit_up/limit_down/bid1/ask1/average_price/multiplier/strike`
-  * `volume/pre_open_interest/open_interest/bid_vol1/ask_vol1`
-* 其他字段按字符串比较（locale 无关，直接按字节序）
+* 数值列判定：两侧值都能转换为 float 则按数值比较，否则按字符串比较
 * 稳定排序：主键按 `sort_spec`，次键固定 `ctp_contract`（保证刷新时行顺序稳定）
+
+### 5.2 Market 过滤（已落地）
+
+* 支持按 exchange / product_class / symbol / ctp_contract 过滤（Enter 弹窗）
+* 过滤仅影响 UI 显示，不回写 router
 
 ---
 
@@ -299,7 +300,7 @@
 2. **live_md 输出接入 router**
    - live_md 生成 MarketSnapshot（从 DataFrame 组装）。
    - 通过 JSON-RPC notification `market.snapshot` 推送 router。
-   - TODO (live_md): 实际 MarketSnapshot 构造逻辑与字段映射由你补充。
+   - MarketSnapshot 字段映射已实现（DataFrame -> columns/rows/row_key）。
    - 增加 python 侧清洗：NaN/Inf -> null、datetime -> ISO8601(+08:00)。
 3. **Go UI 侧拉取与渲染**
    - UI 每 500ms poll `router.get_view_snapshot`。
@@ -310,37 +311,38 @@
    - UI 侧维护 sort_spec（列 + 升/降序）。
    - UI 内部对 market.rows 排序，仅影响显示。
 5. **联调与验收**
-   - 先只打通 market + logs，确保 UI 刷新稳定。
-   - 再接入 unusual/curve/options（由 worker 模拟或后续补齐）。
+   - 先只打通 market + logs，确保 UI 刷新稳定。（已完成）
+   - 已接入 unusual/curve/options（options_worker / unusual_worker）。
 6. **故障恢复与可观测性**
-   - UI/live_md/worker 统一实现指数退避重连（0.5s~5s）。
+   - UI/live_md/worker 统一实现指数退避重连（0.5s~5s，worker 已完成，UI/live_md 待补）。
    - 各 section 支持 stale 标记与日志告警（不清空最后画面）。
 
 ### 10.2 Checklist
 
-- [x] router 提供 JSON-RPC server，支持 market/curve/options/unusual/log 的缓存与 UI state（Batch-1 已完成 market + ui_state，其他 section 结构已预留）。
+- [x] router 提供 JSON-RPC server，支持 market/curve/options/unusual/log 的缓存与 UI state（含 unusual 阈值）。
 - [x] live_md 能稳定推送 `market.snapshot`（500ms）。
 - [x] live_md 输出满足序列化规则（datetime ISO8601+08:00，NaN/Inf 已转 null）。
 - [x] UI 每 500ms poll view snapshot，market 表格无追加打印、无明显抖动。
 - [x] 排序切换生效（升/降序），行选中稳定。
 - [x] 默认排序为 `volume desc`，且稳定排序次键为 `ctp_contract`。
 - [x] 日志与异常处理可见（stale/parse error 不崩溃，已接入 live log 面板）。
-- [ ] 断线重连/backoff 与 timeout(2s) 行为已联调通过。
+- [ ] 断线重连/backoff 与 timeout(2s) 行为已联调通过（UI/live_md 仍为固定重试）。
 
 ### 10.3 需要修改/新增的文件（初版）
 
 - **新增**：`internal/router/`（路由缓存 + JSON-RPC server）
 - **新增**：`internal/ipc/`（JSON-RPC client/server 共用工具，可选）
+- **新增**：`internal/live/options_worker.py` / `internal/live/unusual_worker.py`（worker 计算 + push）
+- **新增**：`internal/live/options_worker.go` / `internal/live/unusual_worker.go`（worker 启动器）
 - **修改**：`internal/live/live_md.py`（推送 market.snapshot）
 - **修改**：`internal/live/process.go`（启动 live_md 时带 router 地址）
 - **修改**：`internal/tui/`（新增 router client + poll 逻辑）
 - **修改**：`cmd/starsling/main.go`（启动 router / 连接 router）
 
-### 10.4 TODO（由你完成的 py_worker 业务逻辑）
+### 10.4 已完成与待办
 
-- TODO: `py_worker` 中基于 MarketSnapshot 的派生计算逻辑（curve/options/unusual/log）。
-  - 请新建一个worker文件，并完成数据拉取以及结果返送至router的相关代码。中间具体的数据处理逻辑用 TODO 标记，由我具体完成。
-- TODO: `live_md` 中 MarketSnapshot 的字段映射与列定义（DataFrame -> columns/rows/row_key）。
+- 已实现 `options_worker` / `unusual_worker`：从 MarketSnapshot 拉取并推送 curve/options/unusual/log（`py_worker_template.py` 仍保留为扩展入口）。
+- 已实现 `live_md` 中 MarketSnapshot 的字段映射与列定义（DataFrame -> columns/rows/row_key），字段清单如下：
   - `live_md` line:301  market_snapshot = spi.md()
   - market_snapshot columns字段：
       'trading_date' -- pandas Datetime64,
@@ -384,11 +386,11 @@
 
 ## 10.5 Batch-1 完成状态（已落地）
 
-- 已打通最小闭环：`live_md -> router -> tui(left-top market)`。
+- 已打通最小闭环：`live_md -> router -> tui(left-top market)`，并补齐 `options_worker/unusual_worker -> router -> tui` 的右侧 sections + logs。
 - 已完成内嵌 router 生命周期管理（main 启动/停止）。
-- 已完成 UI 侧 `ui.set_focus_symbol` 回写 router（供后续 worker 使用）。
-- 已新增 `py_worker_template.py`，用于后续 Batch-2 业务接入（TODO 占位）。
-- 当前未完成项：worker 实际计算链路、右侧 sections（curve/options/unusual/log）真实数据联动、断线重连 backoff 联调。
+- 已完成 UI 侧 `ui.set_focus_symbol` 回写 router，并支持 unusual 阈值同步。
+- 已新增 `options_worker` / `unusual_worker`（含 Go 启动器）；`py_worker_template.py` 保留为扩展入口。
+- 当前未完成项：UI/live_md 的指数退避重连与 E2E smoke；`risk_free_rate` 配置入口。
 
 ---
 
@@ -425,27 +427,26 @@
 
 ### 12.1 目标
 
-1. 打通 `py_worker -> router -> tui` 的右侧 sections（curve/options/unusual）与左下 logs。
-2. 完成 worker 拉取 market + focus_symbol，并推送派生结果。
-3. 完成断线重连/backoff 联调与稳定性验收。
+1. 打通 `py_worker -> router -> tui` 的右侧 sections（curve/options/unusual）与左下 logs。（已完成）
+2. 完成 worker 拉取 market + focus_symbol，并推送派生结果。（已完成）
+3. 完成断线重连/backoff 联调与稳定性验收。（待验证）
 
 ### 12.2 执行步骤
 
-1. 在 `python/py_worker_template.py` 基础上实现 JSON-RPC client 循环（拉取 market/ui_state，推送派生 snapshots）。  
-   - 具体计算逻辑继续由你完成（保留 TODO）。
-2. 扩展 router notification 处理：`curve.snapshot`、`options.snapshot`、`unusual.snapshot`、`log.append`。
-3. 扩展 `router.get_view_snapshot`：按 `focus_symbol` 返回右侧 sections + logs。
-4. TUI 按 section `seq` 做 diff 渲染，确保仅更新变化 section。
-5. 完成断线重连与 stale 标记联调（worker/router/live_md 三端）。
+1. 在 `python/py_worker_template.py` 基础上实现 JSON-RPC client 循环（拉取 market/ui_state，推送派生 snapshots）。（已完成）
+2. 扩展 router notification 处理：`curve.snapshot`、`options.snapshot`、`unusual.snapshot`、`log.append`。（已完成）
+3. 扩展 `router.get_view_snapshot`：按 `focus_symbol` 返回右侧 sections + logs。（已完成）
+4. TUI 按 section `seq` 做 diff 渲染，确保仅更新变化 section。（已完成）
+5. 完成断线重连与 stale 标记联调（worker/router/live_md 三端）。（待验证）
 
 ### 12.3 Batch-2 Checklist
 
-- [ ] worker 能稳定拉取 `router.get_latest_market` 与 `router.get_ui_state`。
-- [ ] worker 能推送 `curve/options/unusual/log` 四类 notification。
+- [x] worker 能稳定拉取 `router.get_latest_market` 与 `router.get_ui_state`。
+- [x] worker 能推送 `curve/options/unusual/log` 四类 notification。
 - [x] router 已支持接收并缓存 `options.snapshot`，并按 `focus_symbol` 返回 options 快照。
 - [x] UI 右中 options section 已按 seq diff 刷新（IV/Volume 文本图 + 明细预览）。
 - [x] UI 左上 market 已支持 Enter 弹窗进行筛选/排序（exchange/product_class/symbol + sort_by/order）。
-- [ ] 左下 logs 与右上/右下 section 的真实 worker 数据链路仍待接入。
+- [x] 左下 logs 与右上/右下 section 的真实 worker 数据链路已接入。
 - [ ] 断线重连/backoff 与 stale 行为通过 E2E smoke。
 
 
@@ -454,7 +455,7 @@
   - X轴：期货合约，从左至右升序
   - VIX：underlying期货合约的VIX = 该期货合约对应期权链所有delta绝对值小于 0.25 的期权IV的均值
   - forward curve: 各个期货合约的现价 last
-  - 是否提供Enter键弹出二级窗口：不支持
+  - 是否提供Enter键弹出二级窗口：支持（语音播报设置）
 
 - 右中：IV curve + Volume Bar | 对应option_worker
   - X轴：期权strike，从左至右升序
@@ -464,7 +465,7 @@
       'bid_vol1' -- int,
       'ask_vol1' -- int,
   - Volume： 期权当前的成交量volume
-  - 是否提供Enter键弹出二级窗口：不支持
+  - 是否提供Enter键弹出二级窗口：支持（delta 过滤）
 
 - 右下：异常成交 Unusual Volume ｜ 对应unusual_worker
   - 针对期权合约的异常成交监控
