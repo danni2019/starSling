@@ -301,6 +301,67 @@ def _compute_vwap(bid1, ask1, bid_vol1, ask_vol1):
     return (bid_price * bid_vol + ask_price * ask_vol) / float(total_vol)
 
 
+def _compute_mid(bid1, ask1):
+    bid_price = _sanitize_number(bid1)
+    ask_price = _sanitize_number(ask1)
+    if bid_price is None or ask_price is None:
+        return None
+    if bid_price <= 0 or ask_price <= 0:
+        return None
+    return 0.5 * (bid_price + ask_price)
+
+
+def _compute_greeks_with_price_fallback(
+    option_type,
+    underlying,
+    strike,
+    tte_days,
+    risk_free_rate,
+    vwap_price,
+    mid_price,
+    last_price,
+):
+    price_candidates = []
+
+    def _append_price_candidate(source, raw_price):
+        price = _sanitize_number(raw_price)
+        if price is None or price <= 0:
+            return
+        price_candidates.append((source, price))
+
+    _append_price_candidate("vwap", vwap_price)
+    _append_price_candidate("mid", mid_price)
+    _append_price_candidate("last", last_price)
+
+    if not price_candidates:
+        reason = _iv_input_reason(option_type, underlying, strike, None, tte_days)
+        return None, None, None, None, None, None, None, reason
+
+    final_reason = "solver_failed"
+    selected_price = price_candidates[-1][1]
+    selected_source = price_candidates[-1][0]
+    for source, option_price in price_candidates:
+        selected_price = option_price
+        selected_source = source
+        iv_reason = _iv_input_reason(option_type, underlying, strike, option_price, tte_days)
+        iv, d, g, th, v = _compute_greeks(
+            option_type=option_type,
+            underlying=underlying,
+            strike=strike,
+            option_price=option_price,
+            tte_days=tte_days,
+            risk_free_rate=risk_free_rate,
+        )
+        if iv is not None:
+            return iv, d, g, th, v, selected_price, selected_source, "ok"
+        if not HAS_VOLLIB and iv_reason == "ok":
+            final_reason = "fallback_solver_failed"
+        else:
+            final_reason = iv_reason if iv_reason != "ok" else "solver_failed"
+
+    return None, None, None, None, None, selected_price, selected_source, final_reason
+
+
 def _iv_input_reason(option_type, underlying, strike, option_price, tte_days):
     if option_type not in ("c", "p"):
         return "invalid_option_type"
@@ -444,36 +505,34 @@ def build_options_snapshot(rows, risk_free_rate: float):
             row.get("bid_vol1"),
             row.get("ask_vol1"),
         )
-        option_price = vwap_price
-        if option_price is None:
-            option_price = _sanitize_number(row.get("last"))
-            if option_price is not None:
-                diagnostics["last_fallback_used"] += 1
+        mid_price = _compute_mid(
+            row.get("bid1"),
+            row.get("ask1"),
+        )
+        last_price = _sanitize_number(row.get("last"))
         if vwap_price is not None:
             diagnostics["vwap_valid"] += 1
-        if option_price is not None:
+        if vwap_price is not None or mid_price is not None or last_price is not None:
             diagnostics["price_valid"] += 1
         if underlying_price is not None and underlying_price > 0:
             diagnostics["underlying_valid"] += 1
         tte_days = _normalize_tte_days(row.get("tte"))
         option_type = _sanitize_text(row.get("option_type_cp"))
-        iv_reason = _iv_input_reason(option_type, underlying_price, strike, option_price, tte_days)
-        iv, d, g, th, v = _compute_greeks(
+        iv, d, g, th, v, option_price, price_source, final_iv_reason = _compute_greeks_with_price_fallback(
             option_type=option_type,
             underlying=underlying_price,
             strike=strike,
-            option_price=option_price,
             tte_days=tte_days,
             risk_free_rate=risk_free_rate,
+            vwap_price=vwap_price,
+            mid_price=mid_price,
+            last_price=last_price,
         )
+        if price_source == "last":
+            diagnostics["last_fallback_used"] += 1
         if iv is not None:
             diagnostics["iv_valid"] += 1
-            final_iv_reason = "ok"
         else:
-            if not HAS_VOLLIB and iv_reason == "ok":
-                final_iv_reason = "fallback_solver_failed"
-            else:
-                final_iv_reason = iv_reason if iv_reason != "ok" else "solver_failed"
             diagnostics["iv_failure_total"] += 1
             diagnostics["iv_failures"][final_iv_reason] = diagnostics["iv_failures"].get(final_iv_reason, 0) + 1
         if len(diagnostics["iv_debug_samples"]) < IV_DEBUG_SAMPLE_LIMIT:
@@ -484,6 +543,7 @@ def build_options_snapshot(rows, risk_free_rate: float):
                 "underlying_price": underlying_price,
                 "strike": strike,
                 "price_for_iv": option_price,
+                "price_source": price_source,
                 "tte_days": tte_days,
                 "iv": iv,
                 "reason": final_iv_reason,
@@ -500,6 +560,7 @@ def build_options_snapshot(rows, risk_free_rate: float):
             "tte": tte_days,
             "underlying_price": underlying_price,
             "price_for_iv": option_price,
+            "price_source": price_source,
             "iv": iv,
             "iv_reason": final_iv_reason,
             "delta": d,

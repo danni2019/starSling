@@ -1,50 +1,35 @@
+# Greeks/IV 价格回退最小方案
 
-# Release Plan (Option B: Offline Bundle)
+目标：只做一个最小改动，降低 ITM 合约 IV/Greeks 无效率。
 
-Goal: Produce install-ready, offline bundles for macOS arm64 and Linux x86_64 that include the Go binary plus a prebuilt Python runtime and dependencies (no network needed on first run).
+## 改动范围
+- 仅调整 IV 输入价格的回退顺序。
+- 不改 `option_type` 逻辑，不引入其他新机制。
 
-## Scope
-- Build Go binaries for both target platforms.
-- Bootstrap and vendor Python runtime + deps into `runtime/<platform>`.
-- Package per-platform tarballs with all required scripts/configs.
-- Generate checksums and a short release note template.
+## 新规则
+- 先用 `vwap` 作为 `option_price` 计算 IV/Greeks。
+- 如果 `vwap` 计算结果无效（例如 `iv is None`），再用 `mid=(bid1+ask1)/2` 重试。
+- 如果 `mid` 仍无效，再退回 `last` 重试。
+- 三者都失败时，保持当前失败输出。
 
-## Execution Checklist
+## 有效结果判定
+- 以 IV 是否成功作为主判定：`iv != None` 视为有效。
+- 若 IV 有效，则该价格来源即为最终 `price_for_iv`。
 
-- [ ] **Step 1: Define release layout**
-  - [ ] `dist/starsling-<platform>/starsling` (Go binary)
-  - [ ] `dist/starsling-<platform>/runtime/<platform>/...` (Python runtime + venv)
-  - [ ] `dist/starsling-<platform>/scripts/` (bootstrap scripts)
-  - [ ] `dist/starsling-<platform>/internal/live/*.py` (workers)
-  - [ ] `dist/starsling-<platform>/python/requirements.txt`
-  - [ ] Optional: `config/starsling.example.json` (sample config)
+## 执行清单（Checklist）
 
-- [ ] **Step 2: Build Go binaries**
-  - [ ] macOS arm64 build
-  - [ ] Linux x86_64 build
+- [ ] **Step 1：实现价格回退链路**
+  - [ ] 在 `options_worker.py` 中按 `vwap -> mid -> last` 顺序尝试求解。
+  - [ ] 每次尝试都调用同一套 `_compute_greeks(...)` 逻辑。
 
-- [ ] **Step 3: Bootstrap Python runtime (offline)**
-  - [ ] Run `scripts/bootstrap_python.sh --platform macos-arm64`
-  - [ ] Run `scripts/bootstrap_python.sh --platform linux-x86_64`
-  - [ ] Verify `runtime/<platform>/venv` exists and deps installed
+- [ ] **Step 2：补充结果来源字段**
+  - [ ] 在输出行中记录最终采用的 `price_source`（`vwap`/`mid`/`last`）。
+  - [ ] `price_for_iv` 保持为最终成功价格。
 
-- [ ] **Step 4: Package artifacts**
-  - [ ] Assemble per-platform folders under `dist/`
-  - [ ] Create `tar.gz` bundles
-  - [ ] Generate `SHA256SUMS.txt`
+- [ ] **Step 3：最小验证**
+  - [ ] 准备 3 组样例：`vwap` 可解、仅 `mid` 可解、仅 `last` 可解。
+  - [ ] 确认回退顺序正确且最终结果符合预期。
 
-- [ ] **Step 5: Sanity checks**
-  - [ ] Unpack each tarball and run `./starsling` (no network)
-  - [ ] Ensure Python runtime is detected without bootstrap
-
-- [ ] **Step 6: Release docs**
-  - [ ] Draft release notes snippet with install/run steps
-  - [ ] Update `README.md` with install + offline bundle instructions
-
-## Out of Scope
-- GUI installers (`.dmg`, `.pkg`, `.deb`, `.rpm`)
-- Code signing / notarization
-
-## Target Files (if needed)
-- `scripts/` (only if bootstrap needs tweaks)
-- `README.md` (optional release usage snippet)
+## 验收标准
+- 当 `vwap` 无效而 `mid` 或 `last` 可解时，不再直接得到 `iv=None`。
+- 不改变现有 `option_type` 处理逻辑和其他计算路径。
