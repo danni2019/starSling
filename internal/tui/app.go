@@ -1058,6 +1058,8 @@ type curvePoint struct {
 	Ask       float64
 	AskVol    float64
 	VIX       float64
+	CallSkew  float64
+	PutSkew   float64
 	HasVolume bool
 	HasOI     bool
 	HasBid    bool
@@ -1065,6 +1067,8 @@ type curvePoint struct {
 	HasBidVol bool
 	HasAskVol bool
 	HasVIX    bool
+	HasCallSkew bool
+	HasPutSkew  bool
 }
 
 func renderCurvePanel(rows []map[string]any) string {
@@ -1085,6 +1089,8 @@ func renderCurvePanel(rows []map[string]any) string {
 		volume, hasVolume := asOptionalFloat(row["volume"])
 		oi, hasOI := asOptionalFloat(row["open_interest"])
 		vix, hasVIX := asOptionalFloat(row["vix"])
+		callSkew, hasCallSkew := asOptionalFloat(row["call_skew"])
+		putSkew, hasPutSkew := asOptionalFloat(row["put_skew"])
 		points = append(points, curvePoint{
 			Contract:  contract,
 			Forward:   forward,
@@ -1095,6 +1101,8 @@ func renderCurvePanel(rows []map[string]any) string {
 			Ask:       ask,
 			AskVol:    askVol,
 			VIX:       vix,
+			CallSkew:  callSkew,
+			PutSkew:   putSkew,
 			HasVolume: hasVolume,
 			HasOI:     hasOI,
 			HasBidVol: hasBidVol,
@@ -1102,6 +1110,8 @@ func renderCurvePanel(rows []map[string]any) string {
 			HasAsk:    hasAsk,
 			HasAskVol: hasAskVol,
 			HasVIX:    hasVIX,
+			HasCallSkew: hasCallSkew,
+			HasPutSkew:  hasPutSkew,
 		})
 	}
 	if len(points) == 0 {
@@ -1113,7 +1123,7 @@ func renderCurvePanel(rows []map[string]any) string {
 	lines := []string{
 		fmt.Sprintf("Contracts: %d", len(points)),
 		"",
-		formatAlignedColumns([]string{"CNTRCT", "FWD", "VOL", "OI", "BIDV", "BID", "ASK", "ASKV", "VIX"}, unifiedColumnWidth),
+		formatAlignedColumns([]string{"CNTRCT", "FWD", "VOL", "OI", "BIDV", "BID", "ASK", "ASKV", "VIX", "CALL_SKW", "PUT_SKW"}, unifiedColumnWidth),
 		"",
 	}
 	limitRows := len(points)
@@ -1150,6 +1160,14 @@ func renderCurvePanel(rows []map[string]any) string {
 		if p.HasVIX {
 			vixText = formatFloat(p.VIX)
 		}
+		callSkewText := "-"
+		if p.HasCallSkew {
+			callSkewText = formatFloat(p.CallSkew)
+		}
+		putSkewText := "-"
+		if p.HasPutSkew {
+			putSkewText = formatFloat(p.PutSkew)
+		}
 		lines = append(lines, formatAlignedColumns([]string{
 			p.Contract,
 			formatFloat(p.Forward),
@@ -1160,6 +1178,8 @@ func renderCurvePanel(rows []map[string]any) string {
 			askText,
 			askVolText,
 			vixText,
+			callSkewText,
+			putSkewText,
 		}, unifiedColumnWidth))
 	}
 	return strings.Join(lines, "\n")

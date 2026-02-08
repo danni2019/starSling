@@ -611,8 +611,8 @@ func TestMarketNumericColumns(t *testing.T) {
 
 func TestRenderCurvePanel(t *testing.T) {
 	panel := renderCurvePanel([]map[string]any{
-		{"ctp_contract": "cu2604", "forward": 104500.0, "volume": 55848.0, "open_interest": 82000.0, "vix": 0.22},
-		{"ctp_contract": "ag2604", "forward": 31490.0, "volume": 9200.0, "open_interest": 75000.0, "vix": 0.30},
+		{"ctp_contract": "cu2604", "forward": 104500.0, "volume": 55848.0, "open_interest": 82000.0, "vix": 0.22, "call_skew": 0.03, "put_skew": -0.02},
+		{"ctp_contract": "ag2604", "forward": 31490.0, "volume": 9200.0, "open_interest": 75000.0, "vix": 0.30, "call_skew": 0.01, "put_skew": -0.01},
 	})
 	if !strings.Contains(panel, "Contracts: 2") {
 		t.Fatalf("expected contract count in curve panel, got: %s", panel)
@@ -622,6 +622,9 @@ func TestRenderCurvePanel(t *testing.T) {
 	}
 	if !strings.Contains(panel, "VOL") || !strings.Contains(panel, "OI") {
 		t.Fatalf("expected VOL and OI columns in curve panel, got: %s", panel)
+	}
+	if !strings.Contains(panel, "CALL_SKW") || !strings.Contains(panel, "PUT_SKW") {
+		t.Fatalf("expected CALL_SKW and PUT_SKW columns in curve panel, got: %s", panel)
 	}
 }
 

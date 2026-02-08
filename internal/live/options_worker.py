@@ -410,6 +410,25 @@ def _option_row_matches_focus(row, focus_symbol):
     return contract == focus or underlying == focus or symbol == focus
 
 
+def _mean_iv_in_abs_delta_band(chain_df, delta_min, delta_max):
+    if chain_df is None or chain_df.empty:
+        return None
+    filtered = chain_df[(chain_df["delta"].abs() >= delta_min) & (chain_df["delta"].abs() <= delta_max)]
+    if filtered.empty:
+        return None
+    return _sanitize_number(filtered["iv"].mean())
+
+
+def _compute_side_skew(chain_df):
+    if chain_df is None or chain_df.empty:
+        return None
+    atm_iv = _mean_iv_in_abs_delta_band(chain_df, 0.45, 0.55)
+    iv25 = _mean_iv_in_abs_delta_band(chain_df, 0.2, 0.3)
+    if atm_iv is None or iv25 is None:
+        return None
+    return _sanitize_number(iv25 - atm_iv)
+
+
 def build_options_snapshot(rows, risk_free_rate: float):
     ts = int(time.time() * 1000)
     if not rows:
@@ -589,6 +608,7 @@ def build_curve_snapshot(market_rows, option_rows, focus_symbol=None) -> dict:
     if not options_df.empty:
         options_df["underlying"] = options_df.get("underlying", pd.Series(dtype="string")).astype("string")
         options_df["underlying_norm"] = options_df["underlying"].astype("string").str.strip().str.lower()
+        options_df["option_type_cp"] = options_df.get("option_type", pd.Series(dtype="string")).astype("string").str.strip().str.lower()
         options_df["iv"] = pd.to_numeric(options_df.get("iv"), errors="coerce")
         options_df["delta"] = pd.to_numeric(options_df.get("delta"), errors="coerce")
 
@@ -633,13 +653,16 @@ def build_curve_snapshot(market_rows, option_rows, focus_symbol=None) -> dict:
         if contract is None or forward is None:
             continue
         vix_value = None
+        call_skew = None
+        put_skew = None
         if not options_df.empty:
             chain = options_df[options_df["underlying_norm"] == _norm_token(contract)]
             if not chain.empty:
                 chain = chain[chain["iv"].notna() & chain["delta"].notna()]
-                chain = chain[chain["delta"].abs() <= 0.25]
                 if not chain.empty:
-                    vix_value = _sanitize_number(chain["iv"].mean())
+                    vix_value = _mean_iv_in_abs_delta_band(chain, 0.25, 0.5)
+                    call_skew = _compute_side_skew(chain[chain["option_type_cp"] == "c"])
+                    put_skew = _compute_side_skew(chain[chain["option_type_cp"] == "p"])
         rows_out.append({
             "ctp_contract": contract,
             "forward": forward,
@@ -650,6 +673,8 @@ def build_curve_snapshot(market_rows, option_rows, focus_symbol=None) -> dict:
             "ask1": _sanitize_number(fut.get("ask1")),
             "ask_vol1": _sanitize_number(fut.get("ask_vol1")),
             "vix": vix_value,
+            "call_skew": call_skew,
+            "put_skew": put_skew,
         })
     return {"schema_version": 1, "ts": ts, "rows": rows_out}, {
         "focus_symbol": focus_norm or "",

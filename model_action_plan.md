@@ -33,3 +33,50 @@
 ## 验收标准
 - 当 `vwap` 无效而 `mid` 或 `last` 可解时，不再直接得到 `iv=None`。
 - 不改变现有 `option_type` 处理逻辑和其他计算路径。
+# Batch-5 Plan (Curve Panel: Add Call/Put Skew)
+
+## Goal
+
+在右上区域（`VIX + forward curve`）新增两列：`CALL_SKEW`、`PUT_SKEW`，并按你定义的口径在 Python `options_worker` 计算后透传到 TUI。
+
+## Current-State Check (Confirmed)
+
+- 当前 VIX 计算逻辑位于 `/Users/daniel/projects/starSling/internal/live/options_worker.py` 的 `build_curve_snapshot`：
+  - 先过滤 `iv`、`delta` 非空；
+  - 再用 `abs(delta) <= 0.25` 的样本求均值；
+  - **并不是** `abs(delta) in [0.25, 0.5]`。
+
+## Target Calculation Rules
+
+- call / put 两侧独立计算，互不干扰：
+  - `atm_iv_side` = 该侧 `abs(delta) in [0.45, 0.55]` 的 `iv` 均值
+  - `iv25_side` = 该侧 `abs(delta) in [0.2, 0.3]` 的 `iv` 均值
+  - 若 `atm_iv_side` 或 `iv25_side` 任一为 None，则该侧 skew=None
+  - `call_skew = call_iv25 - call_atm_iv`
+  - `put_skew = put_iv25 - put_atm_iv`
+
+## Execution Checklist
+
+- [ ] Step 1: Extend curve snapshot payload in Python worker
+  - [x] 在 `build_curve_snapshot` 为每个 `ctp_contract` 计算并写入 `call_skew`、`put_skew`
+  - [x] 复用当前链路筛选（focus symbol + underlying 对齐）确保口径一致
+  - [x] 缺值返回 `None`
+
+- [ ] Step 2: Render new columns in right-top panel
+  - [x] 在 `/Users/daniel/projects/starSling/internal/tui/app.go` 的 curve 表头新增 `CALL_SKEW`、`PUT_SKEW`
+  - [x] 行渲染支持缺值显示 `-`
+  - [x] 保持现有列宽和对齐方式
+
+- [ ] Step 3: Tests
+  - [x] `go test ./internal/tui`
+  - [x] `go test ./...`
+  - [x] `python3 -m py_compile /Users/daniel/projects/starSling/internal/live/options_worker.py`
+
+- [ ] Step 4: Review Gate
+  - [ ] 完成后先请你 code review
+  - [ ] review 通过后再 commit
+
+## Needs Confirmation (Before Coding)
+
+- [x] VIX 口径是否也要同步改为 `abs(delta) in [0.25, 0.5]`？
+  - 已确认并已实现：VIX 改为 `abs(delta) in [0.25, 0.5]`，同时新增 skew 两列。
