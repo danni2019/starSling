@@ -39,6 +39,12 @@ func (ui *UI) buildLiveScreen() tview.Primitive {
 	ui.liveLog.SetBorder(true).SetTitle("Runtime log")
 	ui.liveLog.SetBorderColor(colorBorder).SetTitleColor(colorBorder)
 
+	ui.liveFlow = tview.NewTable()
+	ui.liveFlow.SetSelectable(false, false)
+	ui.liveFlow.SetFixed(1, 0)
+	ui.liveFlow.SetBorder(true).SetTitle("Flow Aggregation")
+	ui.liveFlow.SetBorderColor(colorBorder).SetTitleColor(colorBorder)
+
 	ui.liveCurve = tview.NewTextView()
 	ui.liveCurve.SetTextColor(colorMuted)
 	ui.liveCurve.SetBackgroundColor(colorBackground)
@@ -63,7 +69,7 @@ func (ui *UI) buildLiveScreen() tview.Primitive {
 
 	left := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(ui.liveMarket, 0, 7, true).
-		AddItem(ui.liveLog, 0, 3, false)
+		AddItem(ui.liveFlow, 0, 3, false)
 
 	right := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(ui.liveCurve, 0, 1, false).
@@ -81,11 +87,12 @@ func (ui *UI) buildLiveScreen() tview.Primitive {
 		ui.liveCurve,
 		ui.liveOpts,
 		ui.liveTrades,
-		ui.liveLog,
+		ui.liveFlow,
 	}
 	ui.focusIndex = 0
 	fillMarketTable(ui.liveMarket, nil)
 	fillTradesTable(ui.liveTrades, nil)
+	fillFlowTable(ui.liveFlow, nil)
 	ui.liveLog.SetText("Waiting for runtime logs...")
 
 	return root
@@ -97,12 +104,13 @@ func (ui *UI) updateLiveData() {
 	}
 	fillMarketTable(ui.liveMarket, ui.data.MarketRows)
 	fillTradesTable(ui.liveTrades, ui.data.Trades)
+	fillFlowTable(ui.liveFlow, nil)
 	fillLog(ui.liveLog, ui.data.Logs)
 }
 
 func fillMarketTable(table *tview.Table, rows []MarketRow) {
 	table.Clear()
-	headers := []string{"CONTRACT", "EXCH", "LAST", "CHG", "BID", "ASK", "VOL", "TURNOVER", "OI", "OI_CHG%", "TS"}
+	headers := []string{"CONTRACT", "EXCH", "LAST", "CHG", "CHG%", "BIDV", "BID", "ASK", "ASKV", "VOL", "TURNOVER", "OI", "OI_CHG%", "TS"}
 	for col, label := range headers {
 		cell := tview.NewTableCell(padTableCell(label)).
 			SetTextColor(colorTableHeader).
@@ -112,11 +120,88 @@ func fillMarketTable(table *tview.Table, rows []MarketRow) {
 	}
 
 	for i, row := range rows {
-		values := []string{row.Symbol, row.Exchange, row.Last, row.Chg, row.Bid, row.Ask, row.Vol, row.Turnover, row.OI, row.OIChgPct, row.TS}
+		values := []string{
+			row.Symbol,
+			row.Exchange,
+			row.Last,
+			row.Chg,
+			row.ChgPct,
+			row.BidVol,
+			row.Bid,
+			row.Ask,
+			row.AskVol,
+			row.Vol,
+			row.Turnover,
+			row.OI,
+			row.OIChgPct,
+			row.TS,
+		}
 		for col, value := range values {
 			cell := tview.NewTableCell(padTableCell(value)).
 				SetTextColor(colorTableRow).
 				SetAlign(tview.AlignLeft)
+			table.SetCell(i+1, col, cell)
+		}
+	}
+}
+
+type FlowRow struct {
+	Symbol        string
+	Underlying    string
+	TotalTurnover string
+	ITM           string
+	ITMTurnover   string
+	ITMOIChg      string
+	OTM           string
+	OTMTurnover   string
+	OTMOIChg      string
+}
+
+func fillFlowTable(table *tview.Table, rows []FlowRow) {
+	table.Clear()
+	headers := []string{
+		"SYMBOL",
+		"UNDERLYING",
+		"TOTAL_TURNOVER_SUM",
+		"ITM",
+		"ITM_TURNOVER_SUM",
+		"ITM_OI_CHG_SUM",
+		"OTM",
+		"OTM_TURNOVER_SUM",
+		"OTM_OI_CHG_SUM",
+	}
+	for col, label := range headers {
+		cell := tview.NewTableCell(padTableCell(label)).
+			SetTextColor(colorTableHeader).
+			SetAlign(tview.AlignLeft).
+			SetSelectable(false)
+		table.SetCell(0, col, cell)
+	}
+	if len(rows) == 0 {
+		cell := tview.NewTableCell("Waiting for unusual events...").
+			SetTextColor(colorMuted).
+			SetAlign(tview.AlignLeft).
+			SetSelectable(false)
+		table.SetCell(1, 0, cell)
+		return
+	}
+	for i, row := range rows {
+		values := []string{
+			row.Symbol,
+			row.Underlying,
+			row.TotalTurnover,
+			row.ITM,
+			row.ITMTurnover,
+			row.ITMOIChg,
+			row.OTM,
+			row.OTMTurnover,
+			row.OTMOIChg,
+		}
+		for col, value := range values {
+			cell := tview.NewTableCell(padTableCell(value)).
+				SetTextColor(colorTableRow).
+				SetAlign(tview.AlignLeft).
+				SetSelectable(false)
 			table.SetCell(i+1, col, cell)
 		}
 	}

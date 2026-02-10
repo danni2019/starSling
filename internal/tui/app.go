@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
@@ -38,6 +39,26 @@ const (
 const defaultOptionsDeltaAbsMin = 0.25
 const defaultOptionsDeltaAbsMax = 0.5
 const unifiedColumnWidth = 8
+const defaultFlowWindowSeconds = 120
+const defaultFlowMinAnalysisSeconds = 30
+const maxVoiceQueueSize = 64
+
+var marketDisplaySortFields = []string{
+	"contract",
+	"exchange",
+	"last",
+	"chg",
+	"chg_pct",
+	"bidv",
+	"bid",
+	"ask",
+	"askv",
+	"vol",
+	"turnover",
+	"oi",
+	"oi_chg_pct",
+	"ts",
+}
 
 type UI struct {
 	app   *tview.Application
@@ -58,6 +79,7 @@ type UI struct {
 	liveCurve  *tview.TextView
 	liveOpts   *tview.TextView
 	liveTrades *tview.Table
+	liveFlow   *tview.Table
 
 	focusables []tview.Primitive
 	focusIndex int
@@ -94,43 +116,53 @@ type UI struct {
 	unusualProc   *live.Process
 	unusualCancel context.CancelFunc
 
-	lastMarketSeq         int64
-	lastMarketStale       bool
-	marketSortBy          string
-	marketSortAsc         bool
-	marketRawRows         []map[string]any
-	marketRows            []MarketRow
-	filterExchange        string
-	filterClass           string
-	filterSymbol          string
-	filterContract        string
-	focusSymbol           string
-	focusSyncPending      bool
-	lastOptionsSeq        int64
-	lastOptionsStale      bool
-	lastOptionsKey        string
-	optionsRawRows        []map[string]any
-	optionsDeltaAbsMin    float64
-	optionsDeltaAbsMax    float64
-	optionsDeltaEnabled   bool
-	voiceEnabled          bool
-	voiceContracts        map[string]struct{}
-	voiceLastSpoken       map[string]time.Time
-	voiceLastPrice        map[string]float64
-	voiceUnavailable      bool
-	voiceMutedAt          time.Time
-	lastCurveContracts    []string
-	lastCurveSeq          int64
-	lastCurveStale        bool
-	lastUnusualSeq        int64
-	lastUnusualStale      bool
-	lastLogsSeq           int64
-	unusualChgThreshold   float64
-	unusualRatioThreshold float64
-	liveLogLines          []string
-	logoTitleWidth        int
-	logoFrame             int
-	lastWidth             int
+	lastMarketSeq           int64
+	lastMarketStale         bool
+	marketSortBy            string
+	marketSortAsc           bool
+	marketRawRows           []map[string]any
+	marketRows              []MarketRow
+	filterExchange          string
+	filterClass             string
+	filterSymbol            string
+	filterContract          string
+	focusSymbol             string
+	focusSyncPending        bool
+	lastOptionsSeq          int64
+	lastOptionsStale        bool
+	lastOptionsKey          string
+	optionsRawRows          []map[string]any
+	optionsDeltaAbsMin      float64
+	optionsDeltaAbsMax      float64
+	optionsDeltaEnabled     bool
+	voiceEnabled            bool
+	voiceContracts          map[string]struct{}
+	voiceLastSpoken         map[string]time.Time
+	voiceLastPrice          map[string]float64
+	voiceUnavailable        bool
+	voicePlaybackEnabled    atomic.Bool
+	voiceMutedAt            time.Time
+	lastCurveContracts      []string
+	lastCurveSeq            int64
+	lastCurveStale          bool
+	lastUnusualSeq          int64
+	lastUnusualStale        bool
+	lastLogsSeq             int64
+	unusualChgThreshold     float64
+	unusualRatioThreshold   float64
+	unusualOIRatioThreshold float64
+	liveLogLines            []string
+	flowWindowSeconds       int
+	flowMinAnalysisSeconds  int
+	flowSortBy              string
+	flowSortAsc             bool
+	flowEvents              []flowEvent
+	flowSeen                map[string]struct{}
+	flowHasResult           bool
+	voiceQueue              chan string
+	logoTitleWidth          int
+	logoFrame               int
+	lastWidth               int
 }
 
 func newUI(routerAddr string, logger *slog.Logger) *UI {
@@ -138,21 +170,28 @@ func newUI(routerAddr string, logger *slog.Logger) *UI {
 		logger = logging.New("INFO")
 	}
 	ui := &UI{
-		app:                   tview.NewApplication(),
-		pages:                 tview.NewPages(),
-		data:                  mockData(),
-		logger:                logger,
-		routerAddr:            strings.TrimSpace(routerAddr),
-		screen:                screenMain,
-		marketSortBy:          "volume",
-		marketSortAsc:         false,
-		unusualChgThreshold:   100000.0,
-		unusualRatioThreshold: 0.05,
-		optionsDeltaAbsMin:    defaultOptionsDeltaAbsMin,
-		optionsDeltaAbsMax:    defaultOptionsDeltaAbsMax,
-		voiceContracts:        make(map[string]struct{}),
-		voiceLastSpoken:       make(map[string]time.Time),
-		voiceLastPrice:        make(map[string]float64),
+		app:                     tview.NewApplication(),
+		pages:                   tview.NewPages(),
+		data:                    mockData(),
+		logger:                  logger,
+		routerAddr:              strings.TrimSpace(routerAddr),
+		screen:                  screenMain,
+		marketSortBy:            "vol",
+		marketSortAsc:           false,
+		unusualChgThreshold:     100000.0,
+		unusualRatioThreshold:   0.05,
+		unusualOIRatioThreshold: 0.05,
+		flowWindowSeconds:       defaultFlowWindowSeconds,
+		flowMinAnalysisSeconds:  defaultFlowMinAnalysisSeconds,
+		flowSortBy:              "total_turnover_sum",
+		flowSortAsc:             false,
+		optionsDeltaAbsMin:      defaultOptionsDeltaAbsMin,
+		optionsDeltaAbsMax:      defaultOptionsDeltaAbsMax,
+		voiceContracts:          make(map[string]struct{}),
+		voiceLastSpoken:         make(map[string]time.Time),
+		voiceLastPrice:          make(map[string]float64),
+		flowSeen:                make(map[string]struct{}),
+		voiceQueue:              make(chan string, maxVoiceQueueSize),
 	}
 	if ui.routerAddr != "" {
 		ui.rpcClient = ipc.NewClient(ui.routerAddr)
@@ -160,6 +199,7 @@ func newUI(routerAddr string, logger *slog.Logger) *UI {
 
 	ui.buildScreens()
 	ui.bindKeys()
+	ui.startVoiceWorker()
 	ui.startTicker()
 
 	ui.app.SetRoot(ui.pages, true)
@@ -172,6 +212,7 @@ func newUI(routerAddr string, logger *slog.Logger) *UI {
 func (ui *UI) Run() error {
 	defer ui.stopTicker()
 	defer ui.stopLiveProcess()
+	defer ui.stopVoiceWorker()
 	return ui.app.Run()
 }
 
@@ -233,6 +274,8 @@ func (ui *UI) handleLiveKeys(event *tcell.EventKey) *tcell.EventKey {
 			ui.openVoiceSettings()
 		} else if ui.app.GetFocus() == ui.liveTrades {
 			ui.openUnusualThresholdSettings()
+		} else if ui.app.GetFocus() == ui.liveFlow {
+			ui.openFlowSettings()
 		}
 		return nil
 	case tcell.KeyRune:
@@ -290,13 +333,10 @@ func (ui *UI) openMarketFilter() {
 	classInput := tview.NewInputField().SetLabel("Product Class: ").SetText(ui.filterClass)
 	symbolInput := tview.NewInputField().SetLabel("Symbol: ").SetText(ui.filterSymbol)
 	contractInput := tview.NewInputField().SetLabel("Contract: ").SetText(ui.filterContract)
-	sortOptions := marketSortableColumns(ui.marketRawRows)
-	if len(sortOptions) == 0 {
-		sortOptions = []string{"ctp_contract"}
-	}
+	sortOptions := displayMarketSortColumns()
 	sortIdx := indexOfFold(sortOptions, ui.marketSortBy)
 	if sortIdx < 0 {
-		sortIdx = indexOfFold(sortOptions, "volume")
+		sortIdx = indexOfFold(sortOptions, "vol")
 		if sortIdx < 0 {
 			sortIdx = 0
 		}
@@ -350,7 +390,7 @@ func (ui *UI) openMarketFilter() {
 		ui.filterContract = strings.TrimSpace(contractInput.GetText())
 		sortBy := strings.TrimSpace(strings.ToLower(selectedSortBy))
 		if sortBy == "" {
-			sortBy = "ctp_contract"
+			sortBy = "vol"
 		}
 		ui.marketSortBy = sortBy
 		order := strings.TrimSpace(strings.ToLower(selectedOrder))
@@ -363,7 +403,7 @@ func (ui *UI) openMarketFilter() {
 		ui.filterClass = ""
 		ui.filterSymbol = ""
 		ui.filterContract = ""
-		ui.marketSortBy = "volume"
+		ui.marketSortBy = "vol"
 		ui.marketSortAsc = false
 		ui.renderMarketRows()
 		ui.closeDrilldown()
@@ -384,10 +424,17 @@ func (ui *UI) openUnusualThresholdSettings() {
 	ratioInput := tview.NewInputField().
 		SetLabel("Turnover Ratio >= ").
 		SetText(strconv.FormatFloat(ui.unusualRatioThreshold, 'f', 4, 64))
+	oiRatioInput := tview.NewInputField().
+		SetLabel("OI Ratio >= ").
+		SetText(strconv.FormatFloat(ui.unusualOIRatioThreshold, 'f', 4, 64))
+	hint := tview.NewTextView().
+		SetTextColor(colorMuted).
+		SetText(" ")
 
 	form := tview.NewForm().
 		AddFormItem(chgInput).
-		AddFormItem(ratioInput)
+		AddFormItem(ratioInput).
+		AddFormItem(oiRatioInput)
 	form.SetBorder(true).SetTitle("Unusual thresholds")
 	form.SetBorderColor(colorBorder).SetTitleColor(colorBorder)
 	form.SetBackgroundColor(colorBackground)
@@ -396,25 +443,177 @@ func (ui *UI) openUnusualThresholdSettings() {
 	form.SetButtonBackgroundColor(colorHighlight)
 	form.SetButtonTextColor(colorMenuSelected)
 	form.AddButton("Apply", func() {
-		chg, errChg := strconv.ParseFloat(strings.TrimSpace(chgInput.GetText()), 64)
-		ratio, errRatio := strconv.ParseFloat(strings.TrimSpace(ratioInput.GetText()), 64)
-		if errChg != nil || errRatio != nil || chg <= 0 || ratio <= 0 {
-			ui.appendLiveLogLine("invalid unusual thresholds")
+		chg, ratio, oiRatio, ok := parseUnusualThresholdInputs(
+			chgInput.GetText(),
+			ratioInput.GetText(),
+			oiRatioInput.GetText(),
+		)
+		if !ok {
+			hint.SetText("invalid input: all thresholds must be positive numbers")
 			return
 		}
-		if err := ui.setUnusualThresholds(chg, ratio); err != nil {
+		if err := ui.setUnusualThresholds(chg, ratio, oiRatio); err != nil {
+			hint.SetText("failed to update thresholds: " + err.Error())
 			ui.appendLiveLogLine("failed to update unusual thresholds: " + err.Error())
 			return
 		}
-		ui.appendLiveLogLine(fmt.Sprintf("unusual thresholds updated: chg>=%.0f ratio>=%.2f%%", chg, ratio*100))
+		hint.SetText(" ")
+		ui.appendLiveLogLine(fmt.Sprintf("unusual thresholds updated: chg>=%.0f turnover_ratio>=%.2f%% oi_ratio>=%.2f%%", chg, ratio*100, oiRatio*100))
 		ui.closeDrilldown()
 	})
 	form.AddButton("Cancel", func() {
 		ui.closeDrilldown()
 	})
 
-	ui.pages.AddPage(string(screenDrilldown), centerModal(form, 62, 10), true, true)
+	layout := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(form, 0, 1, true).
+		AddItem(hint, 1, 0, false)
+	ui.pages.AddPage(string(screenDrilldown), centerModal(layout, 62, 14), true, true)
 	ui.app.SetFocus(form)
+}
+
+func (ui *UI) openFlowSettings() {
+	ui.setCurrentScreen(screenDrilldown)
+
+	sortOptions := []string{
+		"symbol",
+		"underlying",
+		"total_turnover_sum",
+		"itm",
+		"itm_turnover_sum",
+		"itm_oi_chg_sum",
+		"otm",
+		"otm_turnover_sum",
+		"otm_oi_chg_sum",
+	}
+	sortIdx := indexOfFold(sortOptions, ui.flowSortBy)
+	if sortIdx < 0 {
+		sortIdx = 2
+	}
+	selectedSort := sortOptions[sortIdx]
+
+	orderOptions := []string{"desc", "asc"}
+	orderIdx := 0
+	if ui.flowSortAsc {
+		orderIdx = 1
+	}
+	selectedOrder := orderOptions[orderIdx]
+
+	sortDropDown := tview.NewDropDown().
+		SetLabel("Sort By: ").
+		SetOptions(sortOptions, func(text string, _ int) {
+			if strings.TrimSpace(text) != "" {
+				selectedSort = strings.TrimSpace(strings.ToLower(text))
+			}
+		})
+	sortDropDown.SetCurrentOption(sortIdx)
+
+	orderDropDown := tview.NewDropDown().
+		SetLabel("Order: ").
+		SetOptions(orderOptions, func(text string, _ int) {
+			if strings.TrimSpace(text) != "" {
+				selectedOrder = strings.TrimSpace(strings.ToLower(text))
+			}
+		})
+	orderDropDown.SetCurrentOption(orderIdx)
+
+	windowInput := tview.NewInputField().
+		SetLabel("window_size(sec) [60,300]: ").
+		SetText(strconv.Itoa(ui.flowWindowSeconds))
+	minWindowInput := tview.NewInputField().
+		SetLabel("min_analysis(sec) [15,60]: ").
+		SetText(strconv.Itoa(ui.flowMinAnalysisSeconds))
+	hint := tview.NewTextView().
+		SetTextColor(colorMuted).
+		SetText(" ")
+
+	form := tview.NewForm().
+		AddFormItem(sortDropDown).
+		AddFormItem(orderDropDown).
+		AddFormItem(windowInput).
+		AddFormItem(minWindowInput)
+	form.SetBorder(true).SetTitle("Flow Aggregation Settings")
+	form.SetBorderColor(colorBorder).SetTitleColor(colorBorder)
+	form.SetBackgroundColor(colorBackground)
+	form.SetFieldBackgroundColor(colorBackground)
+	form.SetFieldTextColor(colorTableRow)
+	form.SetButtonBackgroundColor(colorHighlight)
+	form.SetButtonTextColor(colorMenuSelected)
+
+	form.AddButton("Apply", func() {
+		valid := ui.applyFlowSettings(selectedSort, selectedOrder, windowInput.GetText(), minWindowInput.GetText())
+		windowInput.SetText(strconv.Itoa(ui.flowWindowSeconds))
+		minWindowInput.SetText(strconv.Itoa(ui.flowMinAnalysisSeconds))
+		if !valid {
+			hint.SetText("invalid input detected, reset to defaults")
+			return
+		}
+		hint.SetText(" ")
+		ui.closeDrilldown()
+	})
+	form.AddButton("Cancel", func() {
+		ui.closeDrilldown()
+	})
+
+	layout := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(form, 0, 1, true).
+		AddItem(hint, 1, 0, false)
+	ui.pages.AddPage(string(screenDrilldown), centerModal(layout, 78, 16), true, true)
+	ui.app.SetFocus(form)
+}
+
+func parseIntInRange(raw string, minValue, maxValue int) (int, bool) {
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return 0, false
+	}
+	if value < minValue || value > maxValue {
+		return 0, false
+	}
+	return value, true
+}
+
+func parseUnusualThresholdInputs(chgRaw, ratioRaw, oiRatioRaw string) (float64, float64, float64, bool) {
+	chg, errChg := strconv.ParseFloat(strings.TrimSpace(chgRaw), 64)
+	ratio, errRatio := strconv.ParseFloat(strings.TrimSpace(ratioRaw), 64)
+	oiRatio, errOIRatio := strconv.ParseFloat(strings.TrimSpace(oiRatioRaw), 64)
+	if errChg != nil || errRatio != nil || errOIRatio != nil {
+		return 0, 0, 0, false
+	}
+	if math.IsNaN(chg) || math.IsInf(chg, 0) ||
+		math.IsNaN(ratio) || math.IsInf(ratio, 0) ||
+		math.IsNaN(oiRatio) || math.IsInf(oiRatio, 0) {
+		return 0, 0, 0, false
+	}
+	if chg <= 0 || ratio <= 0 || oiRatio <= 0 {
+		return 0, 0, 0, false
+	}
+	return chg, ratio, oiRatio, true
+}
+
+func (ui *UI) applyFlowSettings(selectedSort, selectedOrder, windowRaw, minRaw string) bool {
+	windowSeconds, okWindow := parseIntInRange(windowRaw, 60, 300)
+	minSeconds, okMin := parseIntInRange(minRaw, 15, 60)
+	if !okWindow {
+		windowSeconds = defaultFlowWindowSeconds
+	}
+	if !okMin {
+		minSeconds = defaultFlowMinAnalysisSeconds
+	}
+	if minSeconds > windowSeconds {
+		minSeconds = defaultFlowMinAnalysisSeconds
+		okMin = false
+	}
+	sortBy := strings.TrimSpace(strings.ToLower(selectedSort))
+	if sortBy == "" {
+		sortBy = "total_turnover_sum"
+	}
+	ui.flowSortBy = sortBy
+	ui.flowSortAsc = strings.TrimSpace(strings.ToLower(selectedOrder)) == "asc"
+	ui.flowWindowSeconds = windowSeconds
+	ui.flowMinAnalysisSeconds = minSeconds
+	ui.renderFlowAggregation()
+	return okWindow && okMin
 }
 
 func (ui *UI) openVoiceSettings() {
@@ -462,12 +661,15 @@ func (ui *UI) openVoiceSettings() {
 	form.AddButton("Apply", func() {
 		ui.voiceEnabled = enabledBox.IsChecked()
 		if !ui.voiceEnabled {
+			ui.voicePlaybackEnabled.Store(false)
 			ui.voiceContracts = make(map[string]struct{})
 			ui.voiceLastSpoken = make(map[string]time.Time)
 			ui.voiceLastPrice = make(map[string]float64)
 			ui.voiceUnavailable = false
 			ui.voiceMutedAt = time.Time{}
+			ui.drainVoiceQueue()
 		} else {
+			ui.voicePlaybackEnabled.Store(true)
 			ui.voiceUnavailable = false
 			ui.voiceContracts = make(map[string]struct{}, len(localContracts))
 			for contract := range localContracts {
@@ -677,6 +879,7 @@ func (ui *UI) applyMarketSnapshot(snapshot router.MarketSnapshot) {
 			ui.marketRawRows = []map[string]any{}
 		}
 		ui.renderMarketRows()
+		ui.renderFlowAggregation()
 		ui.lastMarketSeq = snapshot.Seq
 		ui.ensureFocusSymbol()
 	}
@@ -791,10 +994,14 @@ func (ui *UI) applyUnusualSnapshot(snapshot router.UnusualSnapshot) {
 	if snapshot.Seq == 0 {
 		if ui.lastUnusualSeq != 0 {
 			fillTradesTable(ui.liveTrades, nil)
+			ui.resetFlowAggregation()
 			ui.lastUnusualSeq = 0
 			ui.lastUnusualStale = false
 		}
 		return
+	}
+	if snapshot.Seq < ui.lastUnusualSeq {
+		ui.resetFlowAggregation()
 	}
 	seqChanged := snapshot.Seq != ui.lastUnusualSeq
 	staleChanged := snapshot.Stale != ui.lastUnusualStale
@@ -803,6 +1010,8 @@ func (ui *UI) applyUnusualSnapshot(snapshot router.UnusualSnapshot) {
 	}
 	if seqChanged {
 		fillTradesTable(ui.liveTrades, convertUnusualTrades(snapshot.Rows))
+		ui.ingestFlowEvents(snapshot.Rows)
+		ui.renderFlowAggregation()
 		ui.lastUnusualSeq = snapshot.Seq
 	}
 	if staleChanged && snapshot.Stale {
@@ -868,8 +1077,8 @@ func (ui *UI) renderMarketRows() {
 	selectedRow, _ := ui.liveMarket.GetSelection()
 	if ui.marketRawRows != nil {
 		filtered := filterMarketRows(ui.marketRawRows, ui.filterExchange, ui.filterClass, ui.filterSymbol, ui.filterContract)
-		sortMarketRawRows(filtered, ui.marketSortBy, ui.marketSortAsc)
 		ui.marketRows = convertMarketRows(filtered)
+		sortMarketRows(ui.marketRows, ui.marketSortBy, ui.marketSortAsc)
 	} else {
 		sortMarketRows(ui.marketRows, ui.marketSortBy, ui.marketSortAsc)
 	}
@@ -984,6 +1193,12 @@ func indexOfFold(items []string, target string) int {
 	return -1
 }
 
+func displayMarketSortColumns() []string {
+	out := make([]string, len(marketDisplaySortFields))
+	copy(out, marketDisplaySortFields)
+	return out
+}
+
 func marketSortableColumns(rows []map[string]any) []string {
 	if len(rows) == 0 {
 		return nil
@@ -1049,24 +1264,24 @@ func sortMarketRawRows(rows []map[string]any, sortBy string, asc bool) {
 }
 
 type curvePoint struct {
-	Contract  string
-	Forward   float64
-	Volume    float64
-	OI        float64
-	BidVol    float64
-	Bid       float64
-	Ask       float64
-	AskVol    float64
-	VIX       float64
-	CallSkew  float64
-	PutSkew   float64
-	HasVolume bool
-	HasOI     bool
-	HasBid    bool
-	HasAsk    bool
-	HasBidVol bool
-	HasAskVol bool
-	HasVIX    bool
+	Contract    string
+	Forward     float64
+	Volume      float64
+	OI          float64
+	BidVol      float64
+	Bid         float64
+	Ask         float64
+	AskVol      float64
+	VIX         float64
+	CallSkew    float64
+	PutSkew     float64
+	HasVolume   bool
+	HasOI       bool
+	HasBid      bool
+	HasAsk      bool
+	HasBidVol   bool
+	HasAskVol   bool
+	HasVIX      bool
 	HasCallSkew bool
 	HasPutSkew  bool
 }
@@ -1092,24 +1307,24 @@ func renderCurvePanel(rows []map[string]any) string {
 		callSkew, hasCallSkew := asOptionalFloat(row["call_skew"])
 		putSkew, hasPutSkew := asOptionalFloat(row["put_skew"])
 		points = append(points, curvePoint{
-			Contract:  contract,
-			Forward:   forward,
-			Volume:    volume,
-			OI:        oi,
-			BidVol:    bidVol,
-			Bid:       bid,
-			Ask:       ask,
-			AskVol:    askVol,
-			VIX:       vix,
-			CallSkew:  callSkew,
-			PutSkew:   putSkew,
-			HasVolume: hasVolume,
-			HasOI:     hasOI,
-			HasBidVol: hasBidVol,
-			HasBid:    hasBid,
-			HasAsk:    hasAsk,
-			HasAskVol: hasAskVol,
-			HasVIX:    hasVIX,
+			Contract:    contract,
+			Forward:     forward,
+			Volume:      volume,
+			OI:          oi,
+			BidVol:      bidVol,
+			Bid:         bid,
+			Ask:         ask,
+			AskVol:      askVol,
+			VIX:         vix,
+			CallSkew:    callSkew,
+			PutSkew:     putSkew,
+			HasVolume:   hasVolume,
+			HasOI:       hasOI,
+			HasBidVol:   hasBidVol,
+			HasBid:      hasBid,
+			HasAsk:      hasAsk,
+			HasAskVol:   hasAskVol,
+			HasVIX:      hasVIX,
 			HasCallSkew: hasCallSkew,
 			HasPutSkew:  hasPutSkew,
 		})
@@ -1509,8 +1724,16 @@ func convertUnusualTrades(rows []map[string]any) []TradeRow {
 			continue
 		}
 		price, hasPrice := asOptionalFloat(row["price"])
+		tag := strings.ToUpper(strings.TrimSpace(asString(row["tag"])))
+		if tag == "" {
+			tag = "TURNOVER"
+		}
 		size, hasSize := asOptionalFloat(row["turnover_chg"])
 		ratio, hasRatio := asOptionalFloat(row["turnover_ratio"])
+		if tag == "OI" {
+			size, hasSize = asOptionalFloat(row["oi_chg"])
+			ratio, hasRatio = asOptionalFloat(row["oi_ratio"])
+		}
 		strike, hasStrike := asOptionalFloat(row["strike"])
 		tte, hasTTE := asOptionalFloat(row["tte"])
 		timeText := strings.TrimSpace(asString(row["time"]))
@@ -1540,10 +1763,398 @@ func convertUnusualTrades(rows []map[string]any) []TradeRow {
 			Price:  formatOptionalFloat(price, hasPrice),
 			Size:   formatOptionalFloat(size, hasSize),
 			IV:     ratioText,
-			Tag:    "TURNOVER",
+			Tag:    tag,
 		})
 	}
 	return out
+}
+
+type flowEvent struct {
+	Key         string
+	TS          int64
+	Contract    string
+	Symbol      string
+	Underlying  string
+	CP          string
+	Strike      float64
+	HasStrike   bool
+	Turnover    float64
+	HasTurnover bool
+	OIChg       float64
+	HasOIChg    bool
+}
+
+type flowAggRow struct {
+	Symbol        string
+	Underlying    string
+	TotalTurnover float64
+	ITMWeightNum  float64
+	ITMWeightDen  float64
+	ITMTurnover   float64
+	ITMOIChg      float64
+	OTMWeightNum  float64
+	OTMWeightDen  float64
+	OTMTurnover   float64
+	OTMOIChg      float64
+}
+
+func (ui *UI) resetFlowAggregation() {
+	ui.flowEvents = nil
+	ui.flowSeen = make(map[string]struct{})
+	ui.flowHasResult = false
+	if ui.liveFlow != nil {
+		ui.liveFlow.SetTitle("Flow Aggregation")
+		fillFlowTable(ui.liveFlow, nil)
+	}
+}
+
+func (ui *UI) ingestFlowEvents(rows []map[string]any) {
+	if ui.flowSeen == nil {
+		ui.flowSeen = make(map[string]struct{})
+	}
+	for _, row := range rows {
+		event, ok := toFlowEvent(row)
+		if !ok {
+			continue
+		}
+		if _, exists := ui.flowSeen[event.Key]; exists {
+			continue
+		}
+		ui.flowSeen[event.Key] = struct{}{}
+		ui.flowEvents = append(ui.flowEvents, event)
+	}
+	ui.pruneFlowEvents()
+}
+
+func (ui *UI) pruneFlowEvents() {
+	if len(ui.flowEvents) == 0 {
+		return
+	}
+	maxTS := int64(0)
+	for _, event := range ui.flowEvents {
+		if event.TS > maxTS {
+			maxTS = event.TS
+		}
+	}
+	if maxTS == 0 {
+		return
+	}
+	windowMillis := int64(ui.flowWindowSeconds) * 1000
+	if windowMillis <= 0 {
+		windowMillis = int64(defaultFlowWindowSeconds) * 1000
+	}
+	cutoff := maxTS - windowMillis
+	next := make([]flowEvent, 0, len(ui.flowEvents))
+	nextSeen := make(map[string]struct{}, len(ui.flowEvents))
+	for _, event := range ui.flowEvents {
+		if event.TS < cutoff {
+			continue
+		}
+		next = append(next, event)
+		nextSeen[event.Key] = struct{}{}
+	}
+	ui.flowEvents = next
+	ui.flowSeen = nextSeen
+}
+
+func (ui *UI) renderFlowAggregation() {
+	if ui.liveFlow == nil {
+		return
+	}
+	ui.pruneFlowEvents()
+	if len(ui.flowEvents) == 0 {
+		ui.flowHasResult = false
+		ui.liveFlow.SetTitle("Flow Aggregation")
+		fillFlowTable(ui.liveFlow, nil)
+		return
+	}
+
+	minTS := ui.flowEvents[0].TS
+	maxTS := ui.flowEvents[0].TS
+	for _, event := range ui.flowEvents {
+		if event.TS < minTS {
+			minTS = event.TS
+		}
+		if event.TS > maxTS {
+			maxTS = event.TS
+		}
+	}
+	spanMillis := maxTS - minTS
+	minAnalysisMillis := int64(ui.flowMinAnalysisSeconds) * 1000
+	if minAnalysisMillis <= 0 {
+		minAnalysisMillis = int64(defaultFlowMinAnalysisSeconds) * 1000
+	}
+	if spanMillis < minAnalysisMillis {
+		if !ui.flowHasResult {
+			ui.liveFlow.SetTitle(fmt.Sprintf(
+				"Flow Aggregation (%s ~ %s, collecting)",
+				time.UnixMilli(minTS).Format("15:04:05"),
+				time.UnixMilli(maxTS).Format("15:04:05"),
+			))
+			fillFlowTable(ui.liveFlow, nil)
+		}
+		return
+	}
+
+	underLast := ui.buildUnderlyingLastMap()
+	rowMap := make(map[string]*flowAggRow)
+	for _, event := range ui.flowEvents {
+		symbol := strings.TrimSpace(event.Symbol)
+		if symbol == "" {
+			symbol = inferContractRoot(event.Contract)
+		}
+		underlying := strings.TrimSpace(event.Underlying)
+		if underlying == "" {
+			underlying = event.Contract
+		}
+		turnover := 0.0
+		if event.HasTurnover && event.Turnover > 0 {
+			turnover = event.Turnover
+		}
+
+		if !event.HasStrike {
+			continue
+		}
+		underPrice, ok := underLast[strings.ToLower(strings.TrimSpace(underlying))]
+		if !ok || underPrice <= 0 {
+			continue
+		}
+		cp := strings.ToLower(strings.TrimSpace(event.CP))
+		if cp != "c" && cp != "p" {
+			continue
+		}
+		key := strings.ToLower(symbol) + "|" + strings.ToLower(underlying)
+		bucket, ok := rowMap[key]
+		if !ok {
+			bucket = &flowAggRow{
+				Symbol:     symbol,
+				Underlying: underlying,
+			}
+			rowMap[key] = bucket
+		}
+		if turnover > 0 {
+			bucket.TotalTurnover += turnover
+		}
+		moneyness := event.Strike/underPrice - 1
+		isITM := (cp == "c" && moneyness < 0) || (cp == "p" && moneyness > 0)
+
+		if isITM {
+			if turnover > 0 {
+				bucket.ITMWeightNum += moneyness * turnover
+				bucket.ITMWeightDen += turnover
+				bucket.ITMTurnover += turnover
+			}
+			if event.HasOIChg {
+				bucket.ITMOIChg += event.OIChg
+			}
+			continue
+		}
+
+		if turnover > 0 {
+			bucket.OTMWeightNum += moneyness * turnover
+			bucket.OTMWeightDen += turnover
+			bucket.OTMTurnover += turnover
+		}
+		if event.HasOIChg {
+			bucket.OTMOIChg += event.OIChg
+		}
+	}
+
+	aggRows := make([]flowAggRow, 0, len(rowMap))
+	for _, row := range rowMap {
+		aggRows = append(aggRows, *row)
+	}
+	if len(aggRows) == 0 {
+		ui.flowHasResult = false
+		ui.liveFlow.SetTitle(fmt.Sprintf(
+			"Flow Aggregation (%s ~ %s, no classifiable events)",
+			time.UnixMilli(minTS).Format("15:04:05"),
+			time.UnixMilli(maxTS).Format("15:04:05"),
+		))
+		fillFlowTable(ui.liveFlow, nil)
+		return
+	}
+	sortFlowAggRows(aggRows, ui.flowSortBy, ui.flowSortAsc)
+	displayRows := make([]FlowRow, 0, len(aggRows))
+	for _, row := range aggRows {
+		itmText := "-"
+		if row.ITMWeightDen > 0 {
+			itmText = formatPercent(row.ITMWeightNum / row.ITMWeightDen)
+		}
+		otmText := "-"
+		if row.OTMWeightDen > 0 {
+			otmText = formatPercent(row.OTMWeightNum / row.OTMWeightDen)
+		}
+		displayRows = append(displayRows, FlowRow{
+			Symbol:        row.Symbol,
+			Underlying:    row.Underlying,
+			TotalTurnover: formatFloat(row.TotalTurnover),
+			ITM:           itmText,
+			ITMTurnover:   formatFloat(row.ITMTurnover),
+			ITMOIChg:      formatFloat(row.ITMOIChg),
+			OTM:           otmText,
+			OTMTurnover:   formatFloat(row.OTMTurnover),
+			OTMOIChg:      formatFloat(row.OTMOIChg),
+		})
+	}
+
+	ui.flowHasResult = true
+	ui.liveFlow.SetTitle(fmt.Sprintf(
+		"Flow Aggregation (%s ~ %s)",
+		time.UnixMilli(minTS).Format("15:04:05"),
+		time.UnixMilli(maxTS).Format("15:04:05"),
+	))
+	fillFlowTable(ui.liveFlow, displayRows)
+}
+
+func toFlowEvent(row map[string]any) (flowEvent, bool) {
+	contract := strings.TrimSpace(asString(row["ctp_contract"]))
+	if contract == "" {
+		return flowEvent{}, false
+	}
+	cp := strings.TrimSpace(asString(row["cp"]))
+	tsMillis := flowEventTS(row)
+	strike, hasStrike := asOptionalFloat(row["strike"])
+	turnover, hasTurnover := asOptionalFloat(row["turnover_chg"])
+	oiChg, hasOIChg := asOptionalFloat(row["oi_chg"])
+	key := fmt.Sprintf(
+		"%d|%s|%s|%s|%s",
+		tsMillis,
+		strings.ToLower(contract),
+		strings.ToUpper(strings.TrimSpace(asString(row["tag"]))),
+		strings.ToLower(cp),
+		formatOptionalFloat(strike, hasStrike),
+	)
+	return flowEvent{
+		Key:         key,
+		TS:          tsMillis,
+		Contract:    contract,
+		Symbol:      strings.TrimSpace(asString(row["symbol"])),
+		Underlying:  strings.TrimSpace(asString(row["underlying"])),
+		CP:          cp,
+		Strike:      strike,
+		HasStrike:   hasStrike,
+		Turnover:    turnover,
+		HasTurnover: hasTurnover,
+		OIChg:       oiChg,
+		HasOIChg:    hasOIChg,
+	}, true
+}
+
+func flowEventTS(row map[string]any) int64 {
+	if ts, ok := asOptionalFloat(row["ts"]); ok {
+		return int64(ts)
+	}
+	for _, key := range []string{"time", "datetime"} {
+		text := strings.TrimSpace(asString(row[key]))
+		if text == "" {
+			continue
+		}
+		if parsed, err := time.Parse(time.RFC3339Nano, text); err == nil {
+			return parsed.UnixMilli()
+		}
+		if parsed, err := time.Parse(time.RFC3339, text); err == nil {
+			return parsed.UnixMilli()
+		}
+		if parsed, err := time.Parse("2006-01-02 15:04:05", text); err == nil {
+			return parsed.UnixMilli()
+		}
+	}
+	return time.Now().UnixMilli()
+}
+
+func (ui *UI) buildUnderlyingLastMap() map[string]float64 {
+	result := make(map[string]float64)
+	for _, raw := range ui.marketRawRows {
+		contract := strings.ToLower(strings.TrimSpace(asString(raw["ctp_contract"])))
+		last, ok := asOptionalFloat(raw["last"])
+		if contract == "" || !ok || last <= 0 {
+			continue
+		}
+		result[contract] = last
+	}
+	return result
+}
+
+func inferContractRoot(contract string) string {
+	contract = strings.ToUpper(strings.TrimSpace(contract))
+	var b strings.Builder
+	for _, r := range contract {
+		if r >= 'A' && r <= 'Z' {
+			b.WriteRune(r)
+		} else {
+			break
+		}
+	}
+	root := strings.TrimSpace(b.String())
+	if root == "" {
+		return contract
+	}
+	return root
+}
+
+func sortFlowAggRows(rows []flowAggRow, sortBy string, asc bool) {
+	key := strings.TrimSpace(strings.ToLower(sortBy))
+	if key == "" {
+		key = "total_turnover_sum"
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		leftMetric, leftOK, leftText := flowSortValue(rows[i], key)
+		rightMetric, rightOK, rightText := flowSortValue(rows[j], key)
+		if leftOK != rightOK {
+			return leftOK
+		}
+		if leftOK && rightOK {
+			if leftMetric == rightMetric {
+				if asc {
+					return strings.ToLower(rows[i].Underlying) < strings.ToLower(rows[j].Underlying)
+				}
+				return strings.ToLower(rows[i].Underlying) > strings.ToLower(rows[j].Underlying)
+			}
+			if asc {
+				return leftMetric < rightMetric
+			}
+			return leftMetric > rightMetric
+		}
+		ls := strings.ToLower(leftText)
+		rs := strings.ToLower(rightText)
+		if ls == rs {
+			return strings.ToLower(rows[i].Underlying) < strings.ToLower(rows[j].Underlying)
+		}
+		if asc {
+			return ls < rs
+		}
+		return ls > rs
+	})
+}
+
+func flowSortValue(row flowAggRow, key string) (float64, bool, string) {
+	switch key {
+	case "symbol":
+		return 0, false, row.Symbol
+	case "underlying":
+		return 0, false, row.Underlying
+	case "itm":
+		if row.ITMWeightDen > 0 {
+			return row.ITMWeightNum / row.ITMWeightDen, true, ""
+		}
+		return 0, false, "-"
+	case "otm":
+		if row.OTMWeightDen > 0 {
+			return row.OTMWeightNum / row.OTMWeightDen, true, ""
+		}
+		return 0, false, "-"
+	case "itm_turnover_sum":
+		return row.ITMTurnover, true, ""
+	case "itm_oi_chg_sum":
+		return row.ITMOIChg, true, ""
+	case "otm_turnover_sum":
+		return row.OTMTurnover, true, ""
+	case "otm_oi_chg_sum":
+		return row.OTMOIChg, true, ""
+	default:
+		return row.TotalTurnover, true, ""
+	}
 }
 
 func extractCurveContracts(rows []map[string]any) []string {
@@ -1578,11 +2189,7 @@ func (ui *UI) maybeSpeakQuotes(rows []map[string]any) {
 		return
 	}
 	if _, _, err := resolveVoiceCommand("check"); err != nil {
-		ui.appendLiveLogLine("voice disabled: " + err.Error())
-		ui.voiceUnavailable = true
-		ui.voiceEnabled = false
-		ui.voiceContracts = make(map[string]struct{})
-		ui.voiceMutedAt = time.Time{}
+		ui.disableVoiceReporting(err)
 		return
 	}
 	for _, row := range rows {
@@ -1609,18 +2216,84 @@ func (ui *UI) maybeSpeakQuotes(rows []map[string]any) {
 			continue
 		}
 		msg := fmt.Sprintf("%s: %s", spellContract(contract), formatFloat(last))
-		go func(text string) {
-			if err := ui.speak(text); err != nil {
-				ui.app.QueueUpdateDraw(func() {
-					ui.appendLiveLogLine("voice disabled: " + err.Error())
-					ui.voiceUnavailable = true
-					ui.voiceEnabled = false
-					ui.voiceContracts = make(map[string]struct{})
-				})
-			}
-		}(msg)
+		ui.enqueueVoice(msg)
 		ui.voiceLastPrice[contract] = last
 		ui.voiceLastSpoken[contract] = now
+	}
+}
+
+func (ui *UI) startVoiceWorker() {
+	if ui.voiceQueue == nil {
+		ui.voiceQueue = make(chan string, maxVoiceQueueSize)
+	}
+	go func() {
+		for msg := range ui.voiceQueue {
+			if !ui.voicePlaybackEnabled.Load() {
+				continue
+			}
+			if err := ui.speak(msg); err != nil {
+				ui.app.QueueUpdateDraw(func() {
+					ui.disableVoiceReporting(err)
+				})
+			}
+		}
+	}()
+}
+
+func (ui *UI) stopVoiceWorker() {
+	if ui.voiceQueue != nil {
+		close(ui.voiceQueue)
+		ui.voiceQueue = nil
+	}
+}
+
+func (ui *UI) enqueueVoice(message string) {
+	if ui.voiceQueue == nil || strings.TrimSpace(message) == "" {
+		return
+	}
+	select {
+	case ui.voiceQueue <- message:
+		return
+	default:
+	}
+	select {
+	case <-ui.voiceQueue:
+	default:
+	}
+	select {
+	case ui.voiceQueue <- message:
+	default:
+	}
+}
+
+func (ui *UI) disableVoiceReporting(err error) {
+	if ui.voiceUnavailable && !ui.voiceEnabled && len(ui.voiceContracts) == 0 {
+		return
+	}
+	if err != nil {
+		ui.appendLiveLogLine("voice disabled: " + err.Error())
+	}
+	ui.voiceUnavailable = true
+	ui.voiceEnabled = false
+	ui.voicePlaybackEnabled.Store(false)
+	ui.voiceContracts = make(map[string]struct{})
+	ui.voiceMutedAt = time.Time{}
+	ui.drainVoiceQueue()
+}
+
+func (ui *UI) drainVoiceQueue() {
+	if ui.voiceQueue == nil {
+		return
+	}
+	for {
+		select {
+		case _, ok := <-ui.voiceQueue:
+			if !ok {
+				return
+			}
+		default:
+			return
+		}
 	}
 }
 
@@ -1694,12 +2367,19 @@ func convertMarketRows(raw []map[string]any) []MarketRow {
 		pre, hasPre := asOptionalFloat(item["pre_settlement"])
 		bid, hasBid := asOptionalFloat(item["bid1"])
 		ask, hasAsk := asOptionalFloat(item["ask1"])
+		bidVol, hasBidVol := asOptionalFloat(item["bid_vol1"])
+		askVol, hasAskVol := asOptionalFloat(item["ask_vol1"])
 		turnover, hasTurnover := asOptionalFloat(item["turnover"])
 		oi, hasOI := asOptionalFloat(item["open_interest"])
 		preOI, hasPreOI := asOptionalFloat(item["pre_open_interest"])
 		chg := "-"
+		chgPct := "-"
 		if hasLast && hasPre {
-			chg = formatChange(last - pre)
+			change := last - pre
+			chg = formatChange(change)
+			if last != 0 {
+				chgPct = formatPercent(change / last)
+			}
 		}
 		oiChgPct := "-"
 		if hasOI && hasPreOI && preOI > 0 {
@@ -1716,8 +2396,11 @@ func convertMarketRows(raw []map[string]any) []MarketRow {
 			Exchange: exchange,
 			Last:     formatOptionalFloat(last, hasLast),
 			Chg:      chg,
+			ChgPct:   chgPct,
+			BidVol:   formatOptionalFloat(bidVol, hasBidVol),
 			Bid:      formatOptionalFloat(bid, hasBid),
 			Ask:      formatOptionalFloat(ask, hasAsk),
+			AskVol:   formatOptionalFloat(askVol, hasAskVol),
 			Vol:      formatOptionalIntLike(item["volume"]),
 			Turnover: formatOptionalFloat(turnover, hasTurnover),
 			OI:       formatOptionalIntLike(item["open_interest"]),
@@ -1732,7 +2415,7 @@ func convertMarketRows(raw []map[string]any) []MarketRow {
 func sortMarketRows(rows []MarketRow, sortBy string, asc bool) {
 	key := strings.TrimSpace(strings.ToLower(sortBy))
 	if key == "" {
-		key = "volume"
+		key = "vol"
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
 		left := rows[i]
@@ -1775,10 +2458,16 @@ func marketRowFieldValue(row MarketRow, key string) string {
 		return row.Last
 	case "chg":
 		return row.Chg
+	case "chg_pct":
+		return strings.TrimSuffix(row.ChgPct, "%")
+	case "bidv", "bid_vol1":
+		return row.BidVol
 	case "bid", "bid1":
 		return row.Bid
 	case "ask", "ask1":
 		return row.Ask
+	case "askv", "ask_vol1":
+		return row.AskVol
 	case "volume", "vol":
 		return row.Vol
 	case "turnover":
@@ -2098,17 +2787,21 @@ func (ui *UI) pushUnusualThresholds() error {
 	return ui.rpcClient.Call(ctx, "ui.set_unusual_threshold", router.SetUnusualThresholdParams{
 		TurnoverChgThreshold:   ui.unusualChgThreshold,
 		TurnoverRatioThreshold: ui.unusualRatioThreshold,
+		OIRatioThreshold:       ui.unusualOIRatioThreshold,
 	}, nil)
 }
 
-func (ui *UI) setUnusualThresholds(chgThreshold, ratioThreshold float64) error {
+func (ui *UI) setUnusualThresholds(chgThreshold, ratioThreshold, oiRatioThreshold float64) error {
 	prevChg := ui.unusualChgThreshold
 	prevRatio := ui.unusualRatioThreshold
+	prevOIRatio := ui.unusualOIRatioThreshold
 	ui.unusualChgThreshold = chgThreshold
 	ui.unusualRatioThreshold = ratioThreshold
+	ui.unusualOIRatioThreshold = oiRatioThreshold
 	if err := ui.pushUnusualThresholds(); err != nil {
 		ui.unusualChgThreshold = prevChg
 		ui.unusualRatioThreshold = prevRatio
+		ui.unusualOIRatioThreshold = prevOIRatio
 		return err
 	}
 	return nil

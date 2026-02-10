@@ -12,6 +12,7 @@ POLL_INTERVAL_SECONDS = 0.5
 MAX_BACKOFF_SECONDS = 5.0
 DEFAULT_CHG_THRESHOLD = 100000.0
 DEFAULT_RATIO_THRESHOLD = 0.05
+DEFAULT_OI_RATIO_THRESHOLD = 0.05
 MAX_ITEMS = 80
 
 
@@ -165,6 +166,7 @@ def main() -> int:
     last_seq = 0
     req_id = 1
     prev_turnover = {}
+    prev_oi = {}
     history = []
     backoff_seconds = POLL_INTERVAL_SECONDS
 
@@ -182,6 +184,7 @@ def main() -> int:
             if next_seq < last_seq:
                 # Router session restarted; drop previous turnover baseline/history.
                 prev_turnover = {}
+                prev_oi = {}
                 history = []
                 last_seq = next_seq
             if result.get("unchanged"):
@@ -195,59 +198,106 @@ def main() -> int:
                 ui_state = {}
             chg_threshold = _safe_float(ui_state.get("turnover_chg_threshold"))
             ratio_threshold = _safe_float(ui_state.get("turnover_ratio_threshold"))
+            oi_ratio_threshold = _safe_float(ui_state.get("oi_ratio_threshold"))
             if chg_threshold is None or chg_threshold <= 0:
                 chg_threshold = DEFAULT_CHG_THRESHOLD
             if ratio_threshold is None or ratio_threshold <= 0:
                 ratio_threshold = DEFAULT_RATIO_THRESHOLD
+            if oi_ratio_threshold is None or oi_ratio_threshold <= 0:
+                oi_ratio_threshold = DEFAULT_OI_RATIO_THRESHOLD
 
-            next_prev_turnover = dict(prev_turnover)
-            new_alerts = []
+            current_turnover = {}
+            current_oi = {}
+            latest_rows = {}
             for row in rows:
                 if _safe_text(row.get("product_class")) != "2":
                     continue
                 contract = _safe_text(row.get("ctp_contract"))
                 if not contract:
                     continue
+                latest_rows[contract] = row
                 turnover = _safe_float(row.get("turnover"))
-                if turnover is None:
-                    continue
-                prev = next_prev_turnover.get(contract)
-                next_prev_turnover[contract] = turnover
-                if prev is None or prev <= 0:
-                    continue
-                turnover_chg = turnover - prev
-                turnover_ratio = turnover / prev - 1.0
-                if turnover_chg < chg_threshold or turnover_ratio < ratio_threshold:
-                    continue
-                new_alerts.append({
-                    "ts": int(time.time() * 1000),
-                    "time": _safe_text(row.get("datetime")),
-                    "ctp_contract": contract,
-                    "symbol": _safe_text(row.get("symbol")),
-                    "underlying": _safe_text(row.get("underlying")),
-                    "cp": _option_cp(row.get("option_type")),
-                    "strike": _safe_float(row.get("strike")),
-                    "tte": _compute_tte_days(row),
-                    "price": _safe_float(row.get("last")),
-                    "volume": _safe_float(row.get("volume")),
-                    "turnover": turnover,
-                    "turnover_chg": turnover_chg,
-                    "turnover_ratio": turnover_ratio,
-                })
+                if turnover is not None:
+                    current_turnover[contract] = turnover
+                open_interest = _safe_float(row.get("open_interest"))
+                if open_interest is not None:
+                    current_oi[contract] = open_interest
+
+            new_alerts = []
+            for contract, row in latest_rows.items():
+                turnover = current_turnover.get(contract)
+                prev_turn = prev_turnover.get(contract)
+                if turnover is not None and prev_turn is not None and prev_turn > 0:
+                    turnover_chg = turnover - prev_turn
+                    turnover_ratio = turnover / prev_turn - 1.0
+                    if turnover_chg >= chg_threshold and turnover_ratio >= ratio_threshold:
+                        new_alerts.append({
+                            "ts": int(time.time() * 1000),
+                            "time": _safe_text(row.get("datetime")),
+                            "ctp_contract": contract,
+                            "symbol": _safe_text(row.get("symbol")),
+                            "underlying": _safe_text(row.get("underlying")),
+                            "cp": _option_cp(row.get("option_type")),
+                            "strike": _safe_float(row.get("strike")),
+                            "tte": _compute_tte_days(row),
+                            "price": _safe_float(row.get("last")),
+                            "volume": _safe_float(row.get("volume")),
+                            "turnover": turnover,
+                            "turnover_chg": turnover_chg,
+                            "turnover_ratio": turnover_ratio,
+                            "oi": current_oi.get(contract),
+                            "oi_chg": None,
+                            "oi_ratio": None,
+                            "tag": "TURNOVER",
+                        })
+
+                oi = current_oi.get(contract)
+                prev_oi_value = prev_oi.get(contract)
+                if oi is not None and prev_oi_value is not None and prev_oi_value > 0:
+                    oi_chg = oi - prev_oi_value
+                    oi_ratio = oi / prev_oi_value - 1.0
+                    if abs(oi_ratio) >= oi_ratio_threshold:
+                        new_alerts.append({
+                            "ts": int(time.time() * 1000),
+                            "time": _safe_text(row.get("datetime")),
+                            "ctp_contract": contract,
+                            "symbol": _safe_text(row.get("symbol")),
+                            "underlying": _safe_text(row.get("underlying")),
+                            "cp": _option_cp(row.get("option_type")),
+                            "strike": _safe_float(row.get("strike")),
+                            "tte": _compute_tte_days(row),
+                            "price": _safe_float(row.get("last")),
+                            "volume": _safe_float(row.get("volume")),
+                            "turnover": turnover,
+                            "turnover_chg": None,
+                            "turnover_ratio": None,
+                            "oi": oi,
+                            "oi_chg": oi_chg,
+                            "oi_ratio": oi_ratio,
+                            "tag": "OI",
+                        })
 
             next_history = history
             if new_alerts:
                 next_history = new_alerts + history
                 next_history = next_history[:MAX_ITEMS]
                 for alert in new_alerts:
+                    tag = _safe_text(alert.get("tag")).upper()
+                    if tag == "OI":
+                        msg = (
+                            f"unusual {alert['ctp_contract']} "
+                            f"oi_chg={float(alert['oi_chg']):.0f} oi_ratio={float(alert['oi_ratio']):.2%}"
+                        )
+                    else:
+                        msg = (
+                            f"unusual {alert['ctp_contract']} "
+                            f"chg={float(alert['turnover_chg']):.0f} ratio={float(alert['turnover_ratio']):.2%}"
+                        )
                     _rpc_notify(router_target, "log.append", {
                         "ts": alert["ts"],
                         "level": "WARN",
                         "source": "unusual_worker",
-                        "message": (
-                            f"unusual {alert['ctp_contract']} "
-                            f"chg={alert['turnover_chg']:.0f} ratio={alert['turnover_ratio']:.2%}"
-                        ),
+                        "message": msg,
                     })
 
             _rpc_notify(router_target, "unusual.snapshot", {
@@ -257,7 +307,8 @@ def main() -> int:
             })
 
             # Advance local state only after all RPC calls above succeed.
-            prev_turnover = next_prev_turnover
+            prev_turnover = current_turnover
+            prev_oi = current_oi
             history = next_history
             last_seq = next_seq
             backoff_seconds = POLL_INTERVAL_SECONDS

@@ -242,7 +242,7 @@ func (s *Server) handleRequest(conn net.Conn, msg ipc.Message) {
 			_ = s.writeError(conn, msg.ID, -32602, "invalid params")
 			return
 		}
-		s.state.SetUnusualThresholds(params.TurnoverChgThreshold, params.TurnoverRatioThreshold)
+		s.state.SetUnusualThresholds(params.TurnoverChgThreshold, params.TurnoverRatioThreshold, params.OIRatioThreshold)
 		_ = s.writeResult(conn, msg.ID, map[string]bool{"ok": true})
 	default:
 		_ = s.writeError(conn, msg.ID, -32601, "method not found")

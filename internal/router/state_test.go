@@ -105,13 +105,19 @@ func TestStateThresholdUpdate(t *testing.T) {
 	if uiState.TurnoverRatioThreshold != 0.05 {
 		t.Fatalf("unexpected default ratio threshold: %v", uiState.TurnoverRatioThreshold)
 	}
+	if uiState.OIRatioThreshold != 0.05 {
+		t.Fatalf("unexpected default oi ratio threshold: %v", uiState.OIRatioThreshold)
+	}
 
-	state.SetUnusualThresholds(200000, 0.1)
+	state.SetUnusualThresholds(200000, 0.1, 0.2)
 	uiState = state.GetUIState()
 	if uiState.TurnoverChgThreshold != 200000 {
 		t.Fatalf("unexpected updated chg threshold: %v", uiState.TurnoverChgThreshold)
 	}
 	if uiState.TurnoverRatioThreshold != 0.1 {
 		t.Fatalf("unexpected updated ratio threshold: %v", uiState.TurnoverRatioThreshold)
+	}
+	if uiState.OIRatioThreshold != 0.2 {
+		t.Fatalf("unexpected updated oi ratio threshold: %v", uiState.OIRatioThreshold)
 	}
 }

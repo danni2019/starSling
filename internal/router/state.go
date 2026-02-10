@@ -11,6 +11,7 @@ const staleAfter = 2 * time.Second
 const logBufferSize = 200
 const defaultTurnoverChgThreshold = 100000.0
 const defaultTurnoverRatioThreshold = 0.05
+const defaultOIRatioThreshold = 0.05
 
 type State struct {
 	mu      sync.RWMutex
@@ -23,6 +24,7 @@ type State struct {
 	focusSymbol            string
 	turnoverChgThreshold   float64
 	turnoverRatioThreshold float64
+	oiRatioThreshold       float64
 
 	marketSeq  int64
 	curveSeq   int64
@@ -60,6 +62,7 @@ func NewState() *State {
 		logs:                   []LogLine{},
 		turnoverChgThreshold:   defaultTurnoverChgThreshold,
 		turnoverRatioThreshold: defaultTurnoverRatioThreshold,
+		oiRatioThreshold:       defaultOIRatioThreshold,
 	}
 }
 
@@ -145,6 +148,7 @@ func (s *State) GetUIState() UIState {
 		FocusSymbol:            s.focusSymbol,
 		TurnoverChgThreshold:   s.turnoverChgThreshold,
 		TurnoverRatioThreshold: s.turnoverRatioThreshold,
+		OIRatioThreshold:       s.oiRatioThreshold,
 	}
 }
 
@@ -195,7 +199,7 @@ func (s *State) AppendLog(line LogLine) {
 	s.lastLogs = time.Now()
 }
 
-func (s *State) SetUnusualThresholds(chgThreshold, ratioThreshold float64) {
+func (s *State) SetUnusualThresholds(chgThreshold, ratioThreshold, oiRatioThreshold float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if chgThreshold > 0 {
@@ -203,6 +207,9 @@ func (s *State) SetUnusualThresholds(chgThreshold, ratioThreshold float64) {
 	}
 	if ratioThreshold > 0 {
 		s.turnoverRatioThreshold = ratioThreshold
+	}
+	if oiRatioThreshold > 0 {
+		s.oiRatioThreshold = oiRatioThreshold
 	}
 }
 

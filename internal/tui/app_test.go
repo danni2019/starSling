@@ -348,6 +348,202 @@ func TestApplyOptionsSnapshotRefreshesRowsOnSameSeq(t *testing.T) {
 	}
 }
 
+func TestApplyUnusualSnapshotResetsFlowAggregationOnSeqRegression(t *testing.T) {
+	oldKey := "old-session-event"
+	ui := &UI{
+		liveTrades:        tview.NewTable(),
+		liveFlow:          tview.NewTable(),
+		lastUnusualSeq:    5,
+		flowWindowSeconds: defaultFlowWindowSeconds,
+		flowEvents: []flowEvent{
+			{
+				Key:      oldKey,
+				TS:       1000,
+				Contract: "cu2604C72000",
+			},
+		},
+		flowSeen: map[string]struct{}{
+			oldKey: {},
+		},
+	}
+
+	ui.applyUnusualSnapshot(router.UnusualSnapshot{
+		Seq:  1,
+		Rows: []map[string]any{},
+	})
+
+	if len(ui.flowEvents) != 0 {
+		t.Fatalf("expected flow events to clear on seq regression, got %+v", ui.flowEvents)
+	}
+	if len(ui.flowSeen) != 0 {
+		t.Fatalf("expected flow seen cache to clear on seq regression, got %+v", ui.flowSeen)
+	}
+	if ui.lastUnusualSeq != 1 {
+		t.Fatalf("expected last unusual seq to update to 1, got %d", ui.lastUnusualSeq)
+	}
+}
+
+func TestRenderFlowAggregationPrunesEventsAfterWindowShrink(t *testing.T) {
+	oldKey := "old-window-event"
+	newKey := "new-window-event"
+	ui := &UI{
+		liveFlow:               tview.NewTable(),
+		flowWindowSeconds:      300,
+		flowMinAnalysisSeconds: defaultFlowMinAnalysisSeconds,
+		flowEvents: []flowEvent{
+			{Key: oldKey, TS: 100000, Contract: "cu2604C72000"},
+			{Key: newKey, TS: 300000, Contract: "cu2604C72000"},
+		},
+		flowSeen: map[string]struct{}{
+			oldKey: {},
+			newKey: {},
+		},
+	}
+
+	ui.renderFlowAggregation()
+	if len(ui.flowEvents) != 2 {
+		t.Fatalf("expected both events within initial 300s window, got %d", len(ui.flowEvents))
+	}
+
+	ui.flowWindowSeconds = 60
+	ui.renderFlowAggregation()
+
+	if len(ui.flowEvents) != 1 {
+		t.Fatalf("expected one event after shrinking to 60s window, got %d", len(ui.flowEvents))
+	}
+	if ui.flowEvents[0].Key != newKey {
+		t.Fatalf("expected newest event to remain after pruning, got key %q", ui.flowEvents[0].Key)
+	}
+	if len(ui.flowSeen) != 1 {
+		t.Fatalf("expected flow seen map to be pruned to one entry, got %d", len(ui.flowSeen))
+	}
+	if _, ok := ui.flowSeen[newKey]; !ok {
+		t.Fatalf("expected flow seen map to retain newest key")
+	}
+	if _, ok := ui.flowSeen[oldKey]; ok {
+		t.Fatalf("expected old key to be removed after pruning")
+	}
+}
+
+func TestRenderFlowAggregationSkipsUnclassifiableTurnoverInTotals(t *testing.T) {
+	ui := &UI{
+		liveFlow:               tview.NewTable(),
+		flowWindowSeconds:      defaultFlowWindowSeconds,
+		flowMinAnalysisSeconds: defaultFlowMinAnalysisSeconds,
+		marketRawRows: []map[string]any{
+			{"ctp_contract": "cu2604", "last": 100.0},
+		},
+		flowEvents: []flowEvent{
+			{
+				Key:         "valid",
+				TS:          100000,
+				Contract:    "cu2604C72000",
+				Symbol:      "CU",
+				Underlying:  "cu2604",
+				CP:          "c",
+				Strike:      90.0,
+				HasStrike:   true,
+				Turnover:    100.0,
+				HasTurnover: true,
+			},
+			{
+				Key:         "invalid-cp",
+				TS:          132000,
+				Contract:    "cu2604X72000",
+				Symbol:      "CU",
+				Underlying:  "cu2604",
+				CP:          "x",
+				Strike:      90.0,
+				HasStrike:   true,
+				Turnover:    200.0,
+				HasTurnover: true,
+			},
+		},
+		flowSeen: map[string]struct{}{
+			"valid":      {},
+			"invalid-cp": {},
+		},
+	}
+
+	ui.renderFlowAggregation()
+
+	if got := ui.liveFlow.GetRowCount(); got < 2 {
+		t.Fatalf("expected at least one aggregated row, got row count %d", got)
+	}
+
+	total, ok := parseFloat(strings.TrimSpace(ui.liveFlow.GetCell(1, 2).Text))
+	if !ok {
+		t.Fatalf("expected total turnover to be numeric, got %q", ui.liveFlow.GetCell(1, 2).Text)
+	}
+	itmTurnover, ok := parseFloat(strings.TrimSpace(ui.liveFlow.GetCell(1, 4).Text))
+	if !ok {
+		t.Fatalf("expected ITM turnover to be numeric, got %q", ui.liveFlow.GetCell(1, 4).Text)
+	}
+	otmTurnover, ok := parseFloat(strings.TrimSpace(ui.liveFlow.GetCell(1, 7).Text))
+	if !ok {
+		t.Fatalf("expected OTM turnover to be numeric, got %q", ui.liveFlow.GetCell(1, 7).Text)
+	}
+	if total != 100.0 {
+		t.Fatalf("expected only classifiable turnover to be counted in total, got %v", total)
+	}
+	if total != itmTurnover+otmTurnover {
+		t.Fatalf("expected total turnover to equal ITM+OTM turnover, got total=%v itm=%v otm=%v", total, itmTurnover, otmTurnover)
+	}
+}
+
+func TestRenderFlowAggregationDoesNotCreateRowsForOnlyUnclassifiableEvents(t *testing.T) {
+	ui := &UI{
+		liveFlow:               tview.NewTable(),
+		flowWindowSeconds:      defaultFlowWindowSeconds,
+		flowMinAnalysisSeconds: defaultFlowMinAnalysisSeconds,
+		marketRawRows: []map[string]any{
+			{"ctp_contract": "cu2604", "last": 100.0},
+		},
+		flowEvents: []flowEvent{
+			{
+				Key:         "invalid-cp-1",
+				TS:          100000,
+				Contract:    "cu2604X72000",
+				Symbol:      "CU",
+				Underlying:  "cu2604",
+				CP:          "x",
+				Strike:      90.0,
+				HasStrike:   true,
+				Turnover:    100.0,
+				HasTurnover: true,
+			},
+			{
+				Key:         "invalid-cp-2",
+				TS:          132000,
+				Contract:    "cu2604X72100",
+				Symbol:      "CU",
+				Underlying:  "cu2604",
+				CP:          "x",
+				Strike:      91.0,
+				HasStrike:   true,
+				Turnover:    200.0,
+				HasTurnover: true,
+			},
+		},
+		flowSeen: map[string]struct{}{
+			"invalid-cp-1": {},
+			"invalid-cp-2": {},
+		},
+	}
+
+	ui.renderFlowAggregation()
+
+	if ui.flowHasResult {
+		t.Fatalf("expected flowHasResult=false when no events are classifiable")
+	}
+	if got := strings.TrimSpace(ui.liveFlow.GetCell(1, 0).Text); got != "Waiting for unusual events..." {
+		t.Fatalf("expected waiting placeholder for unclassifiable-only window, got %q", got)
+	}
+	if title := ui.liveFlow.GetTitle(); !strings.Contains(title, "no classifiable events") {
+		t.Fatalf("expected title to report no classifiable events, got %q", title)
+	}
+}
+
 func TestRenderOptionsPanelShowsFullChainWithoutTruncation(t *testing.T) {
 	rows := make([]map[string]any, 0, 30)
 	for i := 0; i < 30; i++ {
@@ -525,16 +721,80 @@ func TestParsePositiveRangeFallsBackToDefaults(t *testing.T) {
 	}
 }
 
+func TestParseUnusualThresholdInputs(t *testing.T) {
+	chg, ratio, oiRatio, ok := parseUnusualThresholdInputs("200000", "0.2", "0.15")
+	if !ok {
+		t.Fatalf("expected parseUnusualThresholdInputs to succeed")
+	}
+	if chg != 200000 || ratio != 0.2 || oiRatio != 0.15 {
+		t.Fatalf("unexpected parsed values: chg=%v ratio=%v oiRatio=%v", chg, ratio, oiRatio)
+	}
+
+	if _, _, _, ok := parseUnusualThresholdInputs("bad", "0.2", "0.15"); ok {
+		t.Fatalf("expected invalid parse for non-numeric value")
+	}
+	if _, _, _, ok := parseUnusualThresholdInputs("200000", "0", "0.15"); ok {
+		t.Fatalf("expected invalid parse for non-positive ratio")
+	}
+	if _, _, _, ok := parseUnusualThresholdInputs("NaN", "0.2", "0.15"); ok {
+		t.Fatalf("expected invalid parse for NaN input")
+	}
+}
+
+func TestApplyFlowSettingsFallsBackAndAppliesImmediately(t *testing.T) {
+	ui := &UI{
+		flowSortBy:             "symbol",
+		flowSortAsc:            true,
+		flowWindowSeconds:      300,
+		flowMinAnalysisSeconds: 45,
+	}
+
+	valid := ui.applyFlowSettings("total_turnover_sum", "desc", "bad", "999")
+	if valid {
+		t.Fatalf("expected applyFlowSettings to report invalid input")
+	}
+	if ui.flowSortBy != "total_turnover_sum" {
+		t.Fatalf("expected sort field update, got %q", ui.flowSortBy)
+	}
+	if ui.flowSortAsc {
+		t.Fatalf("expected descending sort order")
+	}
+	if ui.flowWindowSeconds != defaultFlowWindowSeconds {
+		t.Fatalf("expected fallback window %d, got %d", defaultFlowWindowSeconds, ui.flowWindowSeconds)
+	}
+	if ui.flowMinAnalysisSeconds != defaultFlowMinAnalysisSeconds {
+		t.Fatalf("expected fallback min window %d, got %d", defaultFlowMinAnalysisSeconds, ui.flowMinAnalysisSeconds)
+	}
+
+	valid = ui.applyFlowSettings("itm", "asc", "60", "70")
+	if valid {
+		t.Fatalf("expected applyFlowSettings to reject min_analysis > window_size")
+	}
+	if ui.flowSortBy != "itm" {
+		t.Fatalf("expected updated sort field for second apply, got %q", ui.flowSortBy)
+	}
+	if !ui.flowSortAsc {
+		t.Fatalf("expected ascending sort order on second apply")
+	}
+	if ui.flowWindowSeconds != 60 {
+		t.Fatalf("expected window_size to keep valid value 60, got %d", ui.flowWindowSeconds)
+	}
+	if ui.flowMinAnalysisSeconds != defaultFlowMinAnalysisSeconds {
+		t.Fatalf("expected min window fallback %d when min>window, got %d", defaultFlowMinAnalysisSeconds, ui.flowMinAnalysisSeconds)
+	}
+}
+
 func TestSetUnusualThresholdsRollsBackOnRPCFailure(t *testing.T) {
 	client := ipc.NewClient("127.0.0.1:1")
 	client.Timeout = 50 * time.Millisecond
 	ui := &UI{
-		rpcClient:             client,
-		unusualChgThreshold:   100000,
-		unusualRatioThreshold: 0.05,
+		rpcClient:               client,
+		unusualChgThreshold:     100000,
+		unusualRatioThreshold:   0.05,
+		unusualOIRatioThreshold: 0.05,
 	}
 
-	err := ui.setUnusualThresholds(200000, 0.2)
+	err := ui.setUnusualThresholds(200000, 0.2, 0.1)
 	if err == nil {
 		t.Fatalf("expected threshold sync failure")
 	}
@@ -543,6 +803,9 @@ func TestSetUnusualThresholdsRollsBackOnRPCFailure(t *testing.T) {
 	}
 	if ui.unusualRatioThreshold != 0.05 {
 		t.Fatalf("expected ratio threshold rollback to 0.05, got %v", ui.unusualRatioThreshold)
+	}
+	if ui.unusualOIRatioThreshold != 0.05 {
+		t.Fatalf("expected oi ratio threshold rollback to 0.05, got %v", ui.unusualOIRatioThreshold)
 	}
 }
 
@@ -685,6 +948,123 @@ func TestConvertUnusualTradesKeepsMissingNumbersUnknown(t *testing.T) {
 	}
 	if trades[0].TTE != "-" {
 		t.Fatalf("expected missing tte to render as '-', got %q", trades[0].TTE)
+	}
+}
+
+func TestConvertUnusualTradesUsesOIRowFieldsWhenTagIsOI(t *testing.T) {
+	rows := []map[string]any{
+		{
+			"time":         "2026-02-05T21:01:00+08:00",
+			"ctp_contract": "cu2604C72000",
+			"cp":           "c",
+			"strike":       72000.0,
+			"tte":          35.0,
+			"price":        85.0,
+			"oi_chg":       -1200.0,
+			"oi_ratio":     -0.08,
+			"tag":          "OI",
+		},
+	}
+	trades := convertUnusualTrades(rows)
+	if len(trades) != 1 {
+		t.Fatalf("expected 1 converted trade, got %d", len(trades))
+	}
+	if trades[0].Tag != "OI" {
+		t.Fatalf("expected OI tag, got: %s", trades[0].Tag)
+	}
+	if trades[0].Size != "-1200" {
+		t.Fatalf("expected OI CHG to be used as size, got: %s", trades[0].Size)
+	}
+	if trades[0].IV != "-8.0%" {
+		t.Fatalf("expected OI ratio to be used, got: %s", trades[0].IV)
+	}
+}
+
+func TestToFlowEventUsesTurnoverChange(t *testing.T) {
+	row := map[string]any{
+		"ts":           float64(1738789200000),
+		"ctp_contract": "cu2604C72000",
+		"cp":           "c",
+		"strike":       72000.0,
+		"turnover":     980000.0,
+		"turnover_chg": 120000.0,
+		"tag":          "TURNOVER",
+	}
+
+	event, ok := toFlowEvent(row)
+	if !ok {
+		t.Fatalf("expected row to convert into flow event")
+	}
+	if !event.HasTurnover {
+		t.Fatalf("expected turnover_chg to be used as flow turnover")
+	}
+	if event.Turnover != 120000.0 {
+		t.Fatalf("expected flow turnover 120000, got %v", event.Turnover)
+	}
+}
+
+func TestToFlowEventIgnoresCumulativeTurnoverForOITag(t *testing.T) {
+	row := map[string]any{
+		"ts":           float64(1738789200000),
+		"ctp_contract": "cu2604C72000",
+		"cp":           "c",
+		"strike":       72000.0,
+		"turnover":     980000.0,
+		"oi_chg":       -1200.0,
+		"tag":          "OI",
+	}
+
+	event, ok := toFlowEvent(row)
+	if !ok {
+		t.Fatalf("expected row to convert into flow event")
+	}
+	if event.HasTurnover {
+		t.Fatalf("expected OI-only event without turnover_chg to skip turnover aggregation, got %v", event.Turnover)
+	}
+}
+
+func TestDisableVoiceReportingDisablesPlaybackAndDrainsQueue(t *testing.T) {
+	ui := &UI{
+		voiceEnabled:   true,
+		voiceContracts: map[string]struct{}{"cu2604": {}},
+		voiceQueue:     make(chan string, 3),
+	}
+	ui.voicePlaybackEnabled.Store(true)
+	ui.voiceQueue <- "m1"
+	ui.voiceQueue <- "m2"
+
+	ui.disableVoiceReporting(nil)
+
+	if ui.voiceEnabled {
+		t.Fatalf("expected voice to be disabled")
+	}
+	if ui.voicePlaybackEnabled.Load() {
+		t.Fatalf("expected playback flag to be disabled")
+	}
+	if len(ui.voiceContracts) != 0 {
+		t.Fatalf("expected voice contracts to be cleared, got %+v", ui.voiceContracts)
+	}
+	if got := len(ui.voiceQueue); got != 0 {
+		t.Fatalf("expected voice queue to be drained, got size %d", got)
+	}
+}
+
+func TestDrainVoiceQueueReturnsOnClosedChannel(t *testing.T) {
+	ui := &UI{
+		voiceQueue: make(chan string, 1),
+	}
+	close(ui.voiceQueue)
+
+	done := make(chan struct{})
+	go func() {
+		ui.drainVoiceQueue()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("expected drainVoiceQueue to return for closed channel")
 	}
 }
 

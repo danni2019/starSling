@@ -7,8 +7,11 @@ type MarketRow struct {
 	Exchange string
 	Last     string
 	Chg      string
+	ChgPct   string
+	BidVol   string
 	Bid      string
 	Ask      string
+	AskVol   string
 	Vol      string
 	Turnover string
 	OI       string
@@ -42,12 +45,12 @@ type MockData struct {
 func mockData() MockData {
 	return MockData{
 		MarketRows: []MarketRow{
-			{Symbol: "ag2604", Exchange: "SHFE", Last: "31490", Chg: "+120", Bid: "31480", Ask: "31500", Vol: "9.2k", Turnover: "289400000", OI: "82k", OIChgPct: "+1.6%", TS: "21:07:13"},
-			{Symbol: "ag2605", Exchange: "SHFE", Last: "31340", Chg: "+80", Bid: "31330", Ask: "31350", Vol: "6.1k", Turnover: "191300000", OI: "75k", OIChgPct: "+0.9%", TS: "21:07:13"},
-			{Symbol: "ag2606", Exchange: "SHFE", Last: "31210", Chg: "+40", Bid: "31200", Ask: "31220", Vol: "4.9k", Turnover: "153200000", OI: "68k", OIChgPct: "+0.4%", TS: "21:07:12"},
-			{Symbol: "au2604", Exchange: "SHFE", Last: "482.10", Chg: "+1.25", Bid: "482.05", Ask: "482.15", Vol: "3.4k", Turnover: "164100000", OI: "41k", OIChgPct: "-0.3%", TS: "21:07:12"},
-			{Symbol: "sc2603", Exchange: "INE", Last: "502.6", Chg: "+4.8", Bid: "502.5", Ask: "502.7", Vol: "12.7k", Turnover: "638900000", OI: "66k", OIChgPct: "+2.1%", TS: "21:07:12"},
-			{Symbol: "cu2603", Exchange: "SHFE", Last: "72840", Chg: "+210", Bid: "72830", Ask: "72850", Vol: "8.9k", Turnover: "648300000", OI: "93k", OIChgPct: "+1.2%", TS: "21:07:11"},
+			{Symbol: "ag2604", Exchange: "SHFE", Last: "31490", Chg: "+120", ChgPct: "+0.38%", BidVol: "2", Bid: "31480", Ask: "31500", AskVol: "4", Vol: "9.2k", Turnover: "289400000", OI: "82k", OIChgPct: "+1.6%", TS: "21:07:13"},
+			{Symbol: "ag2605", Exchange: "SHFE", Last: "31340", Chg: "+80", ChgPct: "+0.26%", BidVol: "1", Bid: "31330", Ask: "31350", AskVol: "3", Vol: "6.1k", Turnover: "191300000", OI: "75k", OIChgPct: "+0.9%", TS: "21:07:13"},
+			{Symbol: "ag2606", Exchange: "SHFE", Last: "31210", Chg: "+40", ChgPct: "+0.13%", BidVol: "5", Bid: "31200", Ask: "31220", AskVol: "2", Vol: "4.9k", Turnover: "153200000", OI: "68k", OIChgPct: "+0.4%", TS: "21:07:12"},
+			{Symbol: "au2604", Exchange: "SHFE", Last: "482.10", Chg: "+1.25", ChgPct: "+0.26%", BidVol: "7", Bid: "482.05", Ask: "482.15", AskVol: "6", Vol: "3.4k", Turnover: "164100000", OI: "41k", OIChgPct: "-0.3%", TS: "21:07:12"},
+			{Symbol: "sc2603", Exchange: "INE", Last: "502.6", Chg: "+4.8", ChgPct: "+0.95%", BidVol: "9", Bid: "502.5", Ask: "502.7", AskVol: "8", Vol: "12.7k", Turnover: "638900000", OI: "66k", OIChgPct: "+2.1%", TS: "21:07:12"},
+			{Symbol: "cu2603", Exchange: "SHFE", Last: "72840", Chg: "+210", ChgPct: "+0.29%", BidVol: "6", Bid: "72830", Ask: "72850", AskVol: "4", Vol: "8.9k", Turnover: "648300000", OI: "93k", OIChgPct: "+1.2%", TS: "21:07:11"},
 		},
 		Trades: []TradeRow{
 			{Time: "21:07:13", Sym: "AG2604", CP: "P", Strike: "31000", TTE: "42", Price: "82", Size: "120", IV: "0.46", Tag: ""},

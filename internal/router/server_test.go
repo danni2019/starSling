@@ -128,6 +128,7 @@ func TestRouterMarketSnapshotRoundTrip(t *testing.T) {
 	if err := client.Call(context.Background(), "ui.set_unusual_threshold", SetUnusualThresholdParams{
 		TurnoverChgThreshold:   200000,
 		TurnoverRatioThreshold: 0.2,
+		OIRatioThreshold:       0.15,
 	}, nil); err != nil {
 		t.Fatalf("ui.set_unusual_threshold: %v", err)
 	}
@@ -143,6 +144,9 @@ func TestRouterMarketSnapshotRoundTrip(t *testing.T) {
 	}
 	if uiState.TurnoverRatioThreshold != 0.2 {
 		t.Fatalf("unexpected threshold ratio: %v", uiState.TurnoverRatioThreshold)
+	}
+	if uiState.OIRatioThreshold != 0.15 {
+		t.Fatalf("unexpected threshold oi ratio: %v", uiState.OIRatioThreshold)
 	}
 }
 

@@ -22,6 +22,7 @@ type UIState struct {
 	FocusSymbol            string  `json:"focus_symbol"`
 	TurnoverChgThreshold   float64 `json:"turnover_chg_threshold"`
 	TurnoverRatioThreshold float64 `json:"turnover_ratio_threshold"`
+	OIRatioThreshold       float64 `json:"oi_ratio_threshold"`
 }
 
 type OptionsSnapshot struct {
@@ -79,4 +80,5 @@ type SetFocusSymbolParams struct {
 type SetUnusualThresholdParams struct {
 	TurnoverChgThreshold   float64 `json:"turnover_chg_threshold"`
 	TurnoverRatioThreshold float64 `json:"turnover_ratio_threshold"`
+	OIRatioThreshold       float64 `json:"oi_ratio_threshold"`
 }
