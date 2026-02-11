@@ -1675,6 +1675,65 @@ func TestToFlowEventWithContextOIFallbackSkipsNewerPrevPrice(t *testing.T) {
 	}
 }
 
+func TestToFlowEventWithContextOIFallbackIgnoresCrossedBook(t *testing.T) {
+	row := map[string]any{
+		"ts":           float64(1738789200000),
+		"ctp_contract": "cu2604C72000",
+		"cp":           "c",
+		"price":        0.0,
+		"oi_chg":       -100.0,
+		"bid1":         101.0,
+		"ask1":         100.0,
+		"bid_vol1":     10.0,
+		"ask_vol1":     10.0,
+		"tag":          "OI",
+	}
+
+	event, _, ok := toFlowEventWithContext(row, optionFrame{}, nil)
+	if !ok {
+		t.Fatalf("expected crossed-book OI row to convert into flow event")
+	}
+	if math.Abs(event.WOI-100.0) > 1e-9 {
+		t.Fatalf("expected crossed-book fallback to use safe unit price, got wOI=%v", event.WOI)
+	}
+}
+
+func TestToFlowEventWithContextCrossedBooksDoNotDriveOrderbookChange(t *testing.T) {
+	prevFrame := optionFrame{
+		TS:         1000,
+		Last:       100.0,
+		HasLast:    true,
+		Bid1:       101.0,
+		HasBid1:    true,
+		Ask1:       100.0,
+		HasAsk1:    true,
+		BidVol1:    10.0,
+		HasBidVol1: true,
+		AskVol1:    10.0,
+		HasAskVol1: true,
+	}
+	row := map[string]any{
+		"ts":           float64(2000),
+		"ctp_contract": "cu2604C72000",
+		"cp":           "c",
+		"price":        105.0,
+		"turnover_chg": 100.0,
+		"bid1":         103.0,
+		"ask1":         102.0,
+		"bid_vol1":     10.0,
+		"ask_vol1":     10.0,
+		"tag":          "TURNOVER",
+	}
+
+	event, _, ok := toFlowEventWithContext(row, prevFrame, nil)
+	if !ok {
+		t.Fatalf("expected crossed-book turnover row to convert into flow event")
+	}
+	if math.Abs(event.OrderbookScore) > 1e-9 {
+		t.Fatalf("expected crossed-book change terms to be ignored, got orderbookScore=%v", event.OrderbookScore)
+	}
+}
+
 func TestSpreadRejectsLockedOrCrossedQuotes(t *testing.T) {
 	if _, ok := spread(100, true, 100, true); ok {
 		t.Fatalf("expected locked quotes to be unavailable")

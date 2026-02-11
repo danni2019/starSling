@@ -2622,7 +2622,7 @@ func toFlowEventWithContext(row map[string]any, prevFrame optionFrame, optionRow
 	dOI, hasDOI := diffWithFallback(currFrame.OpenInterest, currFrame.HasOpenInterest, prevFrame.OpenInterest, prevFrame.HasOpenInterest, currFrame.OIChg, currFrame.HasOIChg)
 
 	spreadCurr, hasSpreadCurr := spread(currFrame.Bid1, currFrame.HasBid1, currFrame.Ask1, currFrame.HasAsk1)
-	spreadPrev, _ := spread(prevFrame.Bid1, prevFrame.HasBid1, prevFrame.Ask1, prevFrame.HasAsk1)
+	spreadPrev, hasSpreadPrev := spread(prevFrame.Bid1, prevFrame.HasBid1, prevFrame.Ask1, prevFrame.HasAsk1)
 	_, _ = depthImbalance(currFrame.BidVol1, currFrame.HasBidVol1, currFrame.AskVol1, currFrame.HasAskVol1)
 	_, _ = depthImbalance(prevFrame.BidVol1, prevFrame.HasBidVol1, prevFrame.AskVol1, prevFrame.HasAskVol1)
 	midCurr, hasMidCurr := midPrice(currFrame.Bid1, currFrame.HasBid1, currFrame.Ask1, currFrame.HasAsk1)
@@ -2666,10 +2666,12 @@ func toFlowEventWithContext(row map[string]any, prevFrame optionFrame, optionRow
 		normBy(lastVsMidCurr, math.Max(spreadCurr, 1e-9)),
 		normBy(lastVsBookCurr, math.Max(spreadCurr, 1e-9)),
 	}, []float64{0.6, 0.4}, []bool{hasLastVsMidCurr && hasSpreadCurr, hasLastVsBookCurr && hasSpreadCurr})
+	obChgSpreadOK := hasSpreadCurr && hasSpreadPrev
+	obChgSpreadScale := math.Max(math.Abs(spreadCurr)+math.Abs(spreadPrev), 1e-9)
 	obChg, obChgOK := weightedAvailable([]float64{
-		normBy(dLastVsMid, math.Max(math.Abs(spreadCurr)+math.Abs(spreadPrev), 1e-9)),
-		normBy(dLastVsBook, math.Max(math.Abs(spreadCurr)+math.Abs(spreadPrev), 1e-9)),
-	}, []float64{0.6, 0.4}, []bool{hasDLastVsMid, hasDLastVsBook})
+		normBy(dLastVsMid, obChgSpreadScale),
+		normBy(dLastVsBook, obChgSpreadScale),
+	}, []float64{0.6, 0.4}, []bool{hasDLastVsMid && obChgSpreadOK, hasDLastVsBook && obChgSpreadOK})
 	orderbookScore, _ := weightedAvailable([]float64{obLoc, obChg}, []float64{0.6, 0.4}, []bool{obLocOK, obChgOK})
 	orderbookScore = clipFloat(orderbookScore, -1, 1)
 
@@ -2754,16 +2756,16 @@ func toFlowEventWithContext(row map[string]any, prevFrame optionFrame, optionRow
 	if priceForOI <= 0 && usePrevPriceFallback && prevFrame.HasLast && prevFrame.Last > 0 {
 		priceForOI = prevFrame.Last
 	}
-	if priceForOI <= 0 && hasMidCurr && midCurr > 0 {
+	if priceForOI <= 0 && hasSpreadCurr && hasMidCurr && midCurr > 0 {
 		priceForOI = midCurr
 	}
-	if priceForOI <= 0 && hasBookVWAPCurr && bookVWAPCurr > 0 {
+	if priceForOI <= 0 && hasSpreadCurr && hasBookVWAPCurr && bookVWAPCurr > 0 {
 		priceForOI = bookVWAPCurr
 	}
-	if priceForOI <= 0 && usePrevPriceFallback && hasMidPrev && midPrev > 0 {
+	if priceForOI <= 0 && usePrevPriceFallback && hasSpreadPrev && hasMidPrev && midPrev > 0 {
 		priceForOI = midPrev
 	}
-	if priceForOI <= 0 && usePrevPriceFallback && hasBookVWAPPrev && bookVWAPPrev > 0 {
+	if priceForOI <= 0 && usePrevPriceFallback && hasSpreadPrev && hasBookVWAPPrev && bookVWAPPrev > 0 {
 		priceForOI = bookVWAPPrev
 	}
 	if priceForOI <= 0 {
