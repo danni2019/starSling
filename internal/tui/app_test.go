@@ -781,6 +781,23 @@ func TestApplyFlowSettingsFallsBackAndAppliesImmediately(t *testing.T) {
 	}
 }
 
+func TestAxisQualityEnforcesCapWithoutRenormalization(t *testing.T) {
+	got := axisQuality(1, 0, 0, true, true, false, 0.70)
+	if math.Abs(got-0.70) > 1e-9 {
+		t.Fatalf("expected trigger contribution capped at 0.70 when book quality missing, got %v", got)
+	}
+
+	got = axisQuality(1, 0, 0, true, false, false, 0.70)
+	if math.Abs(got-0.70) > 1e-9 {
+		t.Fatalf("expected single-source quality capped at 0.70, got %v", got)
+	}
+
+	got = axisQuality(1, 0, 0, true, true, true, 0.70)
+	if math.Abs(got-0.60) > 1e-9 {
+		t.Fatalf("expected uncapped full-data blend to stay at 0.60, got %v", got)
+	}
+}
+
 func TestRuntimeDebugUIHiddenByDefault(t *testing.T) {
 	t.Setenv(internalDebugUIEnv, "")
 	ui := &UI{}
@@ -1217,6 +1234,54 @@ func TestIngestFlowEventsDuplicateHistoryDoesNotRollbackCurrFrame(t *testing.T) 
 	}
 }
 
+func TestIngestFlowEventsIgnoresStalePrevFrameBeyondWindow(t *testing.T) {
+	const contract = "cu2604c72000"
+	ui := &UI{
+		flowWindowSeconds:      60,
+		flowSeen:               map[string]int64{},
+		flowPrevByContract:     map[string]optionFrame{},
+		flowCurrByContract:     map[string]optionFrame{},
+	}
+	ui.flowCurrByContract[contract] = optionFrame{
+		TS:          1000,
+		Turnover:    1000000.0,
+		HasTurnover: true,
+	}
+
+	row := map[string]any{
+		"ts":             float64(200000),
+		"ctp_contract":   "cu2604C72000",
+		"cp":             "c",
+		"symbol":         "CU",
+		"underlying":     "cu2604",
+		"price":          100.0,
+		"turnover":       1100000.0,
+		"turnover_chg":   100000.0,
+		"turnover_ratio": 0.1,
+		"tag":            "TURNOVER",
+	}
+
+	ui.ingestFlowEvents([]map[string]any{row})
+
+	if len(ui.flowEvents) != 1 {
+		t.Fatalf("expected one flow event, got %d", len(ui.flowEvents))
+	}
+	event := ui.flowEvents[0]
+	if math.Abs(event.QData-1.0) > 1e-9 {
+		t.Fatalf("expected stale prior frame to be ignored, got qData=%v", event.QData)
+	}
+	if _, ok := ui.flowPrevByContract[contract]; ok {
+		t.Fatalf("expected stale prior frame to be dropped from cache")
+	}
+	currFrame, ok := ui.flowCurrByContract[contract]
+	if !ok {
+		t.Fatalf("expected current frame for contract %s", contract)
+	}
+	if currFrame.TS != 200000 {
+		t.Fatalf("expected current frame timestamp to advance to new row, got %d", currFrame.TS)
+	}
+}
+
 func TestSetUnusualThresholdsRollsBackOnRPCFailure(t *testing.T) {
 	client := ipc.NewClient("127.0.0.1:1")
 	client.Timeout = 50 * time.Millisecond
@@ -1564,6 +1629,94 @@ func TestToFlowEventIgnoresCumulativeTurnoverForOITag(t *testing.T) {
 	}
 	if event.HasTurnover {
 		t.Fatalf("expected OI-only event without turnover_chg to skip turnover aggregation, got %v", event.Turnover)
+	}
+}
+
+func TestToFlowEventKeepsOIEventWhenPriceIsZero(t *testing.T) {
+	row := map[string]any{
+		"ts":           float64(1738789200000),
+		"ctp_contract": "cu2604C72000",
+		"cp":           "c",
+		"price":        0.0,
+		"oi_chg":       -1200.0,
+		"tag":          "OI",
+	}
+
+	event, ok := toFlowEvent(row)
+	if !ok {
+		t.Fatalf("expected OI event with zero price to be kept")
+	}
+	if event.WOI <= 0 || event.WTrigger <= 0 {
+		t.Fatalf("expected positive OI trigger weights, got wOI=%v wTrigger=%v", event.WOI, event.WTrigger)
+	}
+}
+
+func TestSpreadRejectsLockedOrCrossedQuotes(t *testing.T) {
+	if _, ok := spread(100, true, 100, true); ok {
+		t.Fatalf("expected locked quotes to be unavailable")
+	}
+	if _, ok := spread(101, true, 100, true); ok {
+		t.Fatalf("expected crossed quotes to be unavailable")
+	}
+	if got, ok := spread(100, true, 100.5, true); !ok || math.Abs(got-0.5) > 1e-9 {
+		t.Fatalf("expected positive spread to remain available, got spread=%v ok=%v", got, ok)
+	}
+}
+
+func TestBookVWAPReturnsUnavailableOnZeroDepth(t *testing.T) {
+	frame := optionFrame{
+		Bid1:       100,
+		HasBid1:    true,
+		Ask1:       101,
+		HasAsk1:    true,
+		BidVol1:    0,
+		HasBidVol1: true,
+		AskVol1:    0,
+		HasAskVol1: true,
+	}
+	if _, ok := bookVWAP(frame); ok {
+		t.Fatalf("expected zero-depth book VWAP to be unavailable")
+	}
+	frame.BidVol1 = 3
+	frame.AskVol1 = 1
+	if got, ok := bookVWAP(frame); !ok || math.Abs(got-100.25) > 1e-9 {
+		t.Fatalf("expected valid VWAP for positive depth, got vwap=%v ok=%v", got, ok)
+	}
+}
+
+func TestToFlowEventWithContextDowngradesZeroDepthBookQuality(t *testing.T) {
+	prevFrame := optionFrame{
+		Bid1:       99,
+		HasBid1:    true,
+		Ask1:       101,
+		HasAsk1:    true,
+		BidVol1:    0,
+		HasBidVol1: true,
+		AskVol1:    0,
+		HasAskVol1: true,
+	}
+	row := map[string]any{
+		"ts":           float64(1738789200000),
+		"ctp_contract": "cu2604C72000",
+		"cp":           "c",
+		"price":        100.0,
+		"turnover_chg": 120000.0,
+		"bid1":         99.0,
+		"ask1":         101.0,
+		"bid_vol1":     0.0,
+		"ask_vol1":     0.0,
+		"tag":          "TURNOVER",
+	}
+
+	event, _, ok := toFlowEventWithContext(row, prevFrame, nil)
+	if !ok {
+		t.Fatalf("expected row to convert into flow event")
+	}
+	if event.QBookOK {
+		t.Fatalf("expected zero-depth book to be downgraded from full quality")
+	}
+	if math.Abs(event.QBook-1) < 1e-9 {
+		t.Fatalf("expected zero-depth book quality to be less than full quality, got %v", event.QBook)
 	}
 }
 

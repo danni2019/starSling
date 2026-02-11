@@ -1981,7 +1981,16 @@ func (ui *UI) ingestFlowEvents(rows []map[string]any) {
 		contract := strings.ToLower(strings.TrimSpace(asString(row["ctp_contract"])))
 		prevFrame, hasPrev := batchPrevByContract[contract]
 		if hasPrev {
+			rowTS := flowEventTS(row)
+			if ui.isFlowFrameStale(prevFrame, rowTS) {
+				hasPrev = false
+				prevFrame = optionFrame{}
+			}
+		}
+		if hasPrev {
 			ui.flowPrevByContract[contract] = prevFrame
+		} else {
+			delete(ui.flowPrevByContract, contract)
 		}
 		event, currFrame, ok := toFlowEventWithContext(row, prevFrame, optionRowsByContract[contract])
 		if !ok {
@@ -2009,6 +2018,21 @@ func (ui *UI) ingestFlowEvents(rows []map[string]any) {
 	ui.pruneFlowEvents()
 }
 
+func (ui *UI) flowWindowMillis() int64 {
+	windowMillis := int64(ui.flowWindowSeconds) * 1000
+	if windowMillis <= 0 {
+		windowMillis = int64(defaultFlowWindowSeconds) * 1000
+	}
+	return windowMillis
+}
+
+func (ui *UI) isFlowFrameStale(frame optionFrame, rowTS int64) bool {
+	if frame.TS <= 0 || rowTS <= 0 {
+		return false
+	}
+	return rowTS-frame.TS > ui.flowWindowMillis()
+}
+
 func (ui *UI) findFlowEventByKey(key string) int {
 	for idx := range ui.flowEvents {
 		if ui.flowEvents[idx].Key == key {
@@ -2031,10 +2055,7 @@ func (ui *UI) pruneFlowEvents() {
 	if maxTS == 0 {
 		return
 	}
-	windowMillis := int64(ui.flowWindowSeconds) * 1000
-	if windowMillis <= 0 {
-		windowMillis = int64(defaultFlowWindowSeconds) * 1000
-	}
+	windowMillis := ui.flowWindowMillis()
 	cutoff := maxTS - windowMillis - 5000
 	next := make([]flowEvent, 0, len(ui.flowEvents))
 	nextSeen := make(map[string]int64, len(ui.flowEvents))
@@ -2722,14 +2743,35 @@ func toFlowEventWithContext(row map[string]any, prevFrame optionFrame, optionRow
 	oiChg, hasOIChg := asOptionalFloat(row["oi_chg"])
 	oiRatio, hasOIRatio := asOptionalFloat(row["oi_ratio"])
 
-	price := currFrame.Last
+	priceForOI := 0.0
+	if currFrame.HasLast && currFrame.Last > 0 {
+		priceForOI = currFrame.Last
+	}
+	if priceForOI <= 0 && prevFrame.HasLast && prevFrame.Last > 0 {
+		priceForOI = prevFrame.Last
+	}
+	if priceForOI <= 0 && hasMidCurr && midCurr > 0 {
+		priceForOI = midCurr
+	}
+	if priceForOI <= 0 && hasBookVWAPCurr && bookVWAPCurr > 0 {
+		priceForOI = bookVWAPCurr
+	}
+	if priceForOI <= 0 && hasMidPrev && midPrev > 0 {
+		priceForOI = midPrev
+	}
+	if priceForOI <= 0 && hasBookVWAPPrev && bookVWAPPrev > 0 {
+		priceForOI = bookVWAPPrev
+	}
+	if priceForOI <= 0 {
+		priceForOI = 1
+	}
 	wTurn := 0.0
 	if hasTurnoverChg {
 		wTurn = math.Max(turnoverChg, 0)
 	}
 	wOI := 0.0
 	if hasOIChg {
-		wOI = math.Max(math.Abs(oiChg)*math.Max(price, 0), 0)
+		wOI = math.Max(math.Abs(oiChg)*priceForOI, 0)
 	}
 	wTrigger := wTurn + wOI
 	if wTrigger <= 0 {
@@ -2793,8 +2835,8 @@ func toFlowEventWithContext(row map[string]any, prevFrame optionFrame, optionRow
 
 	qBook := 0.0
 	qBookOK := false
-	bookCurrComplete := currFrame.HasBid1 && currFrame.HasAsk1 && currFrame.HasBidVol1 && currFrame.HasAskVol1
-	bookPrevComplete := prevFrame.HasBid1 && prevFrame.HasAsk1 && prevFrame.HasBidVol1 && prevFrame.HasAskVol1
+	bookCurrComplete := currFrame.HasBid1 && currFrame.HasAsk1 && currFrame.HasBidVol1 && currFrame.HasAskVol1 && (currFrame.BidVol1+currFrame.AskVol1) > 0
+	bookPrevComplete := prevFrame.HasBid1 && prevFrame.HasAsk1 && prevFrame.HasBidVol1 && prevFrame.HasAskVol1 && (prevFrame.BidVol1+prevFrame.AskVol1) > 0
 	availBook := false
 	if bookCurrComplete && bookPrevComplete {
 		qBook = 1
@@ -2987,6 +3029,9 @@ func spread(bid float64, hasBid bool, ask float64, hasAsk bool) (float64, bool) 
 	if !hasBid || !hasAsk {
 		return 0, false
 	}
+	if ask <= bid {
+		return 0, false
+	}
 	return ask - bid, true
 }
 
@@ -3008,7 +3053,11 @@ func bookVWAP(frame optionFrame) (float64, bool) {
 	if !frame.HasBid1 || !frame.HasAsk1 || !frame.HasBidVol1 || !frame.HasAskVol1 {
 		return 0, false
 	}
-	return (frame.Bid1*frame.BidVol1 + frame.Ask1*frame.AskVol1) / (frame.BidVol1 + frame.AskVol1 + 1e-9), true
+	depth := frame.BidVol1 + frame.AskVol1
+	if depth <= 0 {
+		return 0, false
+	}
+	return (frame.Bid1*frame.BidVol1 + frame.Ask1*frame.AskVol1) / depth, true
 }
 
 func rangePosition(frame optionFrame) (float64, bool) {
@@ -3059,6 +3108,10 @@ func axisQuality(qTrig, qData, qBook float64, availTrig, availData, availBook bo
 	alphaTrig := 0.6
 	alphaData := 0.2
 	alphaBook := 0.2
+	capAxis = clipFloat(capAxis, 0, 1)
+	if capAxis <= 0 {
+		return 0
+	}
 	type component struct {
 		alpha float64
 		value float64
@@ -3083,26 +3136,13 @@ func axisQuality(qTrig, qData, qBook float64, availTrig, availData, availBook bo
 	if alphaSum <= 0 {
 		return 0
 	}
-	type weighted struct {
-		value float64
-		share float64
-	}
-	weightedComponents := make([]weighted, 0, len(components))
-	shareSum := 0.0
+	q := 0.0
 	for _, component := range components {
 		share := component.alpha / alphaSum
 		if share > capAxis {
 			share = capAxis
 		}
-		weightedComponents = append(weightedComponents, weighted{value: component.value, share: share})
-		shareSum += share
-	}
-	if shareSum <= 0 {
-		return 0
-	}
-	q := 0.0
-	for _, component := range weightedComponents {
-		q += (component.share / shareSum) * component.value
+		q += share * component.value
 	}
 	return clipFloat(q, 0, 1)
 }
