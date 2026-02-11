@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"os"
 	"os/exec"
 	"runtime"
 	"sort"
@@ -42,6 +43,7 @@ const unifiedColumnWidth = 8
 const defaultFlowWindowSeconds = 120
 const defaultFlowMinAnalysisSeconds = 30
 const maxVoiceQueueSize = 64
+const internalDebugUIEnv = "STARSLING_INTERNAL_DEBUG_UI"
 
 var marketDisplaySortFields = []string{
 	"contract",
@@ -58,6 +60,11 @@ var marketDisplaySortFields = []string{
 	"oi",
 	"oi_chg_pct",
 	"ts",
+}
+
+func runtimeDebugUIEnabled() bool {
+	value := strings.TrimSpace(strings.ToLower(os.Getenv(internalDebugUIEnv)))
+	return value == "1" || value == "true" || value == "yes"
 }
 
 type UI struct {
@@ -126,6 +133,7 @@ type UI struct {
 	filterClass             string
 	filterSymbol            string
 	filterContract          string
+	filterMainOnly          bool
 	focusSymbol             string
 	focusSyncPending        bool
 	lastOptionsSeq          int64
@@ -157,7 +165,9 @@ type UI struct {
 	flowSortBy              string
 	flowSortAsc             bool
 	flowEvents              []flowEvent
-	flowSeen                map[string]struct{}
+	flowSeen                map[string]int64
+	flowPrevByContract      map[string]optionFrame
+	flowCurrByContract      map[string]optionFrame
 	flowHasResult           bool
 	voiceQueue              chan string
 	logoTitleWidth          int
@@ -190,7 +200,9 @@ func newUI(routerAddr string, logger *slog.Logger) *UI {
 		voiceContracts:          make(map[string]struct{}),
 		voiceLastSpoken:         make(map[string]time.Time),
 		voiceLastPrice:          make(map[string]float64),
-		flowSeen:                make(map[string]struct{}),
+		flowSeen:                make(map[string]int64),
+		flowPrevByContract:      make(map[string]optionFrame),
+		flowCurrByContract:      make(map[string]optionFrame),
 		voiceQueue:              make(chan string, maxVoiceQueueSize),
 	}
 	if ui.routerAddr != "" {
@@ -333,6 +345,9 @@ func (ui *UI) openMarketFilter() {
 	classInput := tview.NewInputField().SetLabel("Product Class: ").SetText(ui.filterClass)
 	symbolInput := tview.NewInputField().SetLabel("Symbol: ").SetText(ui.filterSymbol)
 	contractInput := tview.NewInputField().SetLabel("Contract: ").SetText(ui.filterContract)
+	mainOnlyCheckbox := tview.NewCheckbox().
+		SetLabel("Main contract only").
+		SetChecked(ui.filterMainOnly)
 	sortOptions := displayMarketSortColumns()
 	sortIdx := indexOfFold(sortOptions, ui.marketSortBy)
 	if sortIdx < 0 {
@@ -373,6 +388,7 @@ func (ui *UI) openMarketFilter() {
 		AddFormItem(classInput).
 		AddFormItem(symbolInput).
 		AddFormItem(contractInput).
+		AddFormItem(mainOnlyCheckbox).
 		AddFormItem(sortDropDown).
 		AddFormItem(orderDropDown)
 	form.SetBorder(true).SetTitle("Market filter & sort")
@@ -388,6 +404,7 @@ func (ui *UI) openMarketFilter() {
 		ui.filterClass = strings.TrimSpace(classInput.GetText())
 		ui.filterSymbol = strings.TrimSpace(symbolInput.GetText())
 		ui.filterContract = strings.TrimSpace(contractInput.GetText())
+		ui.filterMainOnly = mainOnlyCheckbox.IsChecked()
 		sortBy := strings.TrimSpace(strings.ToLower(selectedSortBy))
 		if sortBy == "" {
 			sortBy = "vol"
@@ -399,12 +416,7 @@ func (ui *UI) openMarketFilter() {
 		ui.closeDrilldown()
 	})
 	form.AddButton("Reset", func() {
-		ui.filterExchange = ""
-		ui.filterClass = ""
-		ui.filterSymbol = ""
-		ui.filterContract = ""
-		ui.marketSortBy = "vol"
-		ui.marketSortAsc = false
+		ui.resetMarketFilters()
 		ui.renderMarketRows()
 		ui.closeDrilldown()
 	})
@@ -414,6 +426,16 @@ func (ui *UI) openMarketFilter() {
 
 	ui.pages.AddPage(string(screenDrilldown), centerModal(form, 68, 16), true, true)
 	ui.app.SetFocus(form)
+}
+
+func (ui *UI) resetMarketFilters() {
+	ui.filterExchange = ""
+	ui.filterClass = ""
+	ui.filterSymbol = ""
+	ui.filterContract = ""
+	ui.filterMainOnly = false
+	ui.marketSortBy = "vol"
+	ui.marketSortAsc = false
 }
 
 func (ui *UI) openUnusualThresholdSettings() {
@@ -475,48 +497,6 @@ func (ui *UI) openUnusualThresholdSettings() {
 func (ui *UI) openFlowSettings() {
 	ui.setCurrentScreen(screenDrilldown)
 
-	sortOptions := []string{
-		"symbol",
-		"underlying",
-		"total_turnover_sum",
-		"itm",
-		"itm_turnover_sum",
-		"itm_oi_chg_sum",
-		"otm",
-		"otm_turnover_sum",
-		"otm_oi_chg_sum",
-	}
-	sortIdx := indexOfFold(sortOptions, ui.flowSortBy)
-	if sortIdx < 0 {
-		sortIdx = 2
-	}
-	selectedSort := sortOptions[sortIdx]
-
-	orderOptions := []string{"desc", "asc"}
-	orderIdx := 0
-	if ui.flowSortAsc {
-		orderIdx = 1
-	}
-	selectedOrder := orderOptions[orderIdx]
-
-	sortDropDown := tview.NewDropDown().
-		SetLabel("Sort By: ").
-		SetOptions(sortOptions, func(text string, _ int) {
-			if strings.TrimSpace(text) != "" {
-				selectedSort = strings.TrimSpace(strings.ToLower(text))
-			}
-		})
-	sortDropDown.SetCurrentOption(sortIdx)
-
-	orderDropDown := tview.NewDropDown().
-		SetLabel("Order: ").
-		SetOptions(orderOptions, func(text string, _ int) {
-			if strings.TrimSpace(text) != "" {
-				selectedOrder = strings.TrimSpace(strings.ToLower(text))
-			}
-		})
-	orderDropDown.SetCurrentOption(orderIdx)
-
 	windowInput := tview.NewInputField().
 		SetLabel("window_size(sec) [60,300]: ").
 		SetText(strconv.Itoa(ui.flowWindowSeconds))
@@ -528,8 +508,6 @@ func (ui *UI) openFlowSettings() {
 		SetText(" ")
 
 	form := tview.NewForm().
-		AddFormItem(sortDropDown).
-		AddFormItem(orderDropDown).
 		AddFormItem(windowInput).
 		AddFormItem(minWindowInput)
 	form.SetBorder(true).SetTitle("Flow Aggregation Settings")
@@ -541,7 +519,7 @@ func (ui *UI) openFlowSettings() {
 	form.SetButtonTextColor(colorMenuSelected)
 
 	form.AddButton("Apply", func() {
-		valid := ui.applyFlowSettings(selectedSort, selectedOrder, windowInput.GetText(), minWindowInput.GetText())
+		valid := ui.applyFlowSettings(windowInput.GetText(), minWindowInput.GetText())
 		windowInput.SetText(strconv.Itoa(ui.flowWindowSeconds))
 		minWindowInput.SetText(strconv.Itoa(ui.flowMinAnalysisSeconds))
 		if !valid {
@@ -558,7 +536,7 @@ func (ui *UI) openFlowSettings() {
 	layout := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(form, 0, 1, true).
 		AddItem(hint, 1, 0, false)
-	ui.pages.AddPage(string(screenDrilldown), centerModal(layout, 78, 16), true, true)
+	ui.pages.AddPage(string(screenDrilldown), centerModal(layout, 66, 12), true, true)
 	ui.app.SetFocus(form)
 }
 
@@ -591,7 +569,7 @@ func parseUnusualThresholdInputs(chgRaw, ratioRaw, oiRatioRaw string) (float64, 
 	return chg, ratio, oiRatio, true
 }
 
-func (ui *UI) applyFlowSettings(selectedSort, selectedOrder, windowRaw, minRaw string) bool {
+func (ui *UI) applyFlowSettings(windowRaw, minRaw string) bool {
 	windowSeconds, okWindow := parseIntInRange(windowRaw, 60, 300)
 	minSeconds, okMin := parseIntInRange(minRaw, 15, 60)
 	if !okWindow {
@@ -604,12 +582,6 @@ func (ui *UI) applyFlowSettings(selectedSort, selectedOrder, windowRaw, minRaw s
 		minSeconds = defaultFlowMinAnalysisSeconds
 		okMin = false
 	}
-	sortBy := strings.TrimSpace(strings.ToLower(selectedSort))
-	if sortBy == "" {
-		sortBy = "total_turnover_sum"
-	}
-	ui.flowSortBy = sortBy
-	ui.flowSortAsc = strings.TrimSpace(strings.ToLower(selectedOrder)) == "asc"
 	ui.flowWindowSeconds = windowSeconds
 	ui.flowMinAnalysisSeconds = minSeconds
 	ui.renderFlowAggregation()
@@ -1077,6 +1049,9 @@ func (ui *UI) renderMarketRows() {
 	selectedRow, _ := ui.liveMarket.GetSelection()
 	if ui.marketRawRows != nil {
 		filtered := filterMarketRows(ui.marketRawRows, ui.filterExchange, ui.filterClass, ui.filterSymbol, ui.filterContract)
+		if ui.filterMainOnly {
+			filtered = filterMainContractsBySymbol(filtered)
+		}
 		ui.marketRows = convertMarketRows(filtered)
 		sortMarketRows(ui.marketRows, ui.marketSortBy, ui.marketSortAsc)
 	} else {
@@ -1162,6 +1137,67 @@ func filterMarketRows(rows []map[string]any, exchange, productClass, symbol, con
 		out = append(out, row)
 	}
 	return out
+}
+
+func filterMainContractsBySymbol(rows []map[string]any) []map[string]any {
+	if len(rows) == 0 {
+		return rows
+	}
+	bestBySymbol := make(map[string]map[string]any)
+	for _, row := range rows {
+		symbol := strings.ToLower(strings.TrimSpace(asString(row["symbol"])))
+		if symbol == "" {
+			continue
+		}
+		current, exists := bestBySymbol[symbol]
+		if !exists {
+			bestBySymbol[symbol] = row
+			continue
+		}
+		if shouldReplaceMainContract(current, row) {
+			bestBySymbol[symbol] = row
+		}
+	}
+	if len(bestBySymbol) == 0 {
+		return []map[string]any{}
+	}
+	out := make([]map[string]any, 0, len(bestBySymbol))
+	for _, row := range bestBySymbol {
+		out = append(out, row)
+	}
+	return out
+}
+
+func shouldReplaceMainContract(current, candidate map[string]any) bool {
+	currentOI, currentHasOI := asOptionalFloat(current["open_interest"])
+	candidateOI, candidateHasOI := asOptionalFloat(candidate["open_interest"])
+	if currentHasOI && (math.IsNaN(currentOI) || math.IsInf(currentOI, 0)) {
+		currentHasOI = false
+	}
+	if candidateHasOI && (math.IsNaN(candidateOI) || math.IsInf(candidateOI, 0)) {
+		candidateHasOI = false
+	}
+	if !candidateHasOI {
+		candidateOI = math.Inf(-1)
+	}
+	if !currentHasOI {
+		currentOI = math.Inf(-1)
+	}
+	if candidateOI > currentOI {
+		return true
+	}
+	if candidateOI < currentOI {
+		return false
+	}
+	currentContract := strings.ToLower(strings.TrimSpace(asString(current["ctp_contract"])))
+	candidateContract := strings.ToLower(strings.TrimSpace(asString(candidate["ctp_contract"])))
+	if currentContract == "" {
+		return true
+	}
+	if candidateContract == "" {
+		return false
+	}
+	return candidateContract < currentContract
 }
 
 func csvTokens(value string) map[string]struct{} {
@@ -1769,6 +1805,47 @@ func convertUnusualTrades(rows []map[string]any) []TradeRow {
 	return out
 }
 
+const (
+	flowNeutralThreshold = 0.15
+	flowQualityCap       = 0.70
+	flowPositionCap      = 0.80
+)
+
+type optionFrame struct {
+	TS               int64
+	Last             float64
+	HasLast          bool
+	High             float64
+	HasHigh          bool
+	Low              float64
+	HasLow           bool
+	Volume           float64
+	HasVolume        bool
+	Turnover         float64
+	HasTurnover      bool
+	OpenInterest     float64
+	HasOpenInterest  bool
+	Bid1             float64
+	HasBid1          bool
+	Ask1             float64
+	HasAsk1          bool
+	BidVol1          float64
+	HasBidVol1       bool
+	AskVol1          float64
+	HasAskVol1       bool
+	ExpiryDate       string
+	TTE              float64
+	HasTTE           bool
+	TurnoverChg      float64
+	HasTurnoverChg   bool
+	TurnoverRatio    float64
+	HasTurnoverRatio bool
+	OIChg            float64
+	HasOIChg         bool
+	OIRatio          float64
+	HasOIRatio       bool
+}
+
 type flowEvent struct {
 	Key         string
 	TS          int64
@@ -1782,25 +1859,99 @@ type flowEvent struct {
 	HasTurnover bool
 	OIChg       float64
 	HasOIChg    bool
+
+	TTE      float64
+	HasTTE   bool
+	Expiry   string
+	Tag      string
+	WTurn    float64
+	WOI      float64
+	WTrigger float64
+	QData    float64
+	QBook    float64
+	QBookOK  bool
+
+	DirectionScore float64
+	VolScore       float64
+	GammaScore     float64
+	ThetaScore     float64
+	PositionScore  float64
+	OrderbookScore float64
+
+	Delta    float64
+	Gamma    float64
+	Vega     float64
+	Theta    float64
+	HasDelta bool
+	HasGamma bool
+	HasVega  bool
+	HasTheta bool
+
+	GreeksReady bool
+
+	GDirection float64
+	GVol       float64
+	GGamma     float64
+	GTheta     float64
+	GPosition  float64
+
+	QDirection float64
+	QVol       float64
+	QGamma     float64
+	QTheta     float64
+	QPosition  float64
+
+	WeightDirection float64
+	WeightVol       float64
+	WeightGamma     float64
+	WeightTheta     float64
+	WeightPosition  float64
 }
 
-type flowAggRow struct {
-	Symbol        string
-	Underlying    string
-	TotalTurnover float64
-	ITMWeightNum  float64
-	ITMWeightDen  float64
-	ITMTurnover   float64
-	ITMOIChg      float64
-	OTMWeightNum  float64
-	OTMWeightDen  float64
-	OTMTurnover   float64
-	OTMOIChg      float64
+type flowUnderlyingAgg struct {
+	Underlying string
+
+	UnderDirection float64
+	UnderVol       float64
+	UnderGamma     float64
+	UnderTheta     float64
+	UnderPosition  float64
+
+	DirConfNum   float64
+	DirConfDen   float64
+	VolConfNum   float64
+	VolConfDen   float64
+	GammaConfNum float64
+	GammaConfDen float64
+	ThetaConfNum float64
+	ThetaConfDen float64
+	PosConfNum   float64
+	PosConfDen   float64
+
+	ContractImpact map[string]float64
+	PatternHint    string
+}
+
+type flowPairCandidate struct {
+	A         int
+	B         int
+	PairType  string
+	ComboID   string
+	SizeRaw   float64
+	TimeGapMS int64
+	Balance   float64
+	TimeScore float64
+	SizeScore float64
+	PairScore float64
+	EventIDA  string
+	EventIDB  string
 }
 
 func (ui *UI) resetFlowAggregation() {
 	ui.flowEvents = nil
-	ui.flowSeen = make(map[string]struct{})
+	ui.flowSeen = make(map[string]int64)
+	ui.flowPrevByContract = make(map[string]optionFrame)
+	ui.flowCurrByContract = make(map[string]optionFrame)
 	ui.flowHasResult = false
 	if ui.liveFlow != nil {
 		ui.liveFlow.SetTitle("Flow Aggregation")
@@ -1810,20 +1961,61 @@ func (ui *UI) resetFlowAggregation() {
 
 func (ui *UI) ingestFlowEvents(rows []map[string]any) {
 	if ui.flowSeen == nil {
-		ui.flowSeen = make(map[string]struct{})
+		ui.flowSeen = make(map[string]int64)
 	}
+	if ui.flowPrevByContract == nil {
+		ui.flowPrevByContract = make(map[string]optionFrame)
+	}
+	if ui.flowCurrByContract == nil {
+		ui.flowCurrByContract = make(map[string]optionFrame)
+	}
+	// Keep one stable "previous frame" view for this ingest batch so multiple
+	// rows for the same contract (e.g. TURNOVER + OI) compare against the same
+	// prior tick instead of mutating per row within the batch.
+	batchPrevByContract := make(map[string]optionFrame, len(ui.flowCurrByContract))
+	for contract, frame := range ui.flowCurrByContract {
+		batchPrevByContract[contract] = frame
+	}
+	optionRowsByContract := buildOptionRowsByContract(ui.optionsRawRows)
 	for _, row := range rows {
-		event, ok := toFlowEvent(row)
+		contract := strings.ToLower(strings.TrimSpace(asString(row["ctp_contract"])))
+		prevFrame, hasPrev := batchPrevByContract[contract]
+		if hasPrev {
+			ui.flowPrevByContract[contract] = prevFrame
+		}
+		event, currFrame, ok := toFlowEventWithContext(row, prevFrame, optionRowsByContract[contract])
 		if !ok {
 			continue
 		}
+		shouldAdvanceCurr := true
+		if existingCurr, exists := ui.flowCurrByContract[contract]; exists {
+			// Guard against replayed history rows rolling the cache backward.
+			shouldAdvanceCurr = currFrame.TS >= existingCurr.TS
+		}
 		if _, exists := ui.flowSeen[event.Key]; exists {
+			if idx := ui.findFlowEventByKey(event.Key); idx >= 0 {
+				if !ui.flowEvents[idx].GreeksReady && event.GreeksReady {
+					ui.flowEvents[idx] = event
+				}
+			}
 			continue
 		}
-		ui.flowSeen[event.Key] = struct{}{}
+		if shouldAdvanceCurr {
+			ui.flowCurrByContract[contract] = currFrame
+		}
+		ui.flowSeen[event.Key] = event.TS
 		ui.flowEvents = append(ui.flowEvents, event)
 	}
 	ui.pruneFlowEvents()
+}
+
+func (ui *UI) findFlowEventByKey(key string) int {
+	for idx := range ui.flowEvents {
+		if ui.flowEvents[idx].Key == key {
+			return idx
+		}
+	}
+	return -1
 }
 
 func (ui *UI) pruneFlowEvents() {
@@ -1843,15 +2035,15 @@ func (ui *UI) pruneFlowEvents() {
 	if windowMillis <= 0 {
 		windowMillis = int64(defaultFlowWindowSeconds) * 1000
 	}
-	cutoff := maxTS - windowMillis
+	cutoff := maxTS - windowMillis - 5000
 	next := make([]flowEvent, 0, len(ui.flowEvents))
-	nextSeen := make(map[string]struct{}, len(ui.flowEvents))
+	nextSeen := make(map[string]int64, len(ui.flowEvents))
 	for _, event := range ui.flowEvents {
 		if event.TS < cutoff {
 			continue
 		}
 		next = append(next, event)
-		nextSeen[event.Key] = struct{}{}
+		nextSeen[event.Key] = event.TS
 	}
 	ui.flowEvents = next
 	ui.flowSeen = nextSeen
@@ -1868,7 +2060,6 @@ func (ui *UI) renderFlowAggregation() {
 		fillFlowTable(ui.liveFlow, nil)
 		return
 	}
-
 	minTS := ui.flowEvents[0].TS
 	maxTS := ui.flowEvents[0].TS
 	for _, event := range ui.flowEvents {
@@ -1896,73 +2087,73 @@ func (ui *UI) renderFlowAggregation() {
 		return
 	}
 
-	underLast := ui.buildUnderlyingLastMap()
-	rowMap := make(map[string]*flowAggRow)
+	eventsByUnderlying := make(map[string][]flowEvent)
 	for _, event := range ui.flowEvents {
-		symbol := strings.TrimSpace(event.Symbol)
-		if symbol == "" {
-			symbol = inferContractRoot(event.Contract)
-		}
 		underlying := strings.TrimSpace(event.Underlying)
 		if underlying == "" {
 			underlying = event.Contract
 		}
-		turnover := 0.0
-		if event.HasTurnover && event.Turnover > 0 {
-			turnover = event.Turnover
-		}
-
-		if !event.HasStrike {
-			continue
-		}
-		underPrice, ok := underLast[strings.ToLower(strings.TrimSpace(underlying))]
-		if !ok || underPrice <= 0 {
-			continue
-		}
-		cp := strings.ToLower(strings.TrimSpace(event.CP))
-		if cp != "c" && cp != "p" {
-			continue
-		}
-		key := strings.ToLower(symbol) + "|" + strings.ToLower(underlying)
-		bucket, ok := rowMap[key]
-		if !ok {
-			bucket = &flowAggRow{
-				Symbol:     symbol,
-				Underlying: underlying,
-			}
-			rowMap[key] = bucket
-		}
-		if turnover > 0 {
-			bucket.TotalTurnover += turnover
-		}
-		moneyness := event.Strike/underPrice - 1
-		isITM := (cp == "c" && moneyness < 0) || (cp == "p" && moneyness > 0)
-
-		if isITM {
-			if turnover > 0 {
-				bucket.ITMWeightNum += moneyness * turnover
-				bucket.ITMWeightDen += turnover
-				bucket.ITMTurnover += turnover
-			}
-			if event.HasOIChg {
-				bucket.ITMOIChg += event.OIChg
-			}
-			continue
-		}
-
-		if turnover > 0 {
-			bucket.OTMWeightNum += moneyness * turnover
-			bucket.OTMWeightDen += turnover
-			bucket.OTMTurnover += turnover
-		}
-		if event.HasOIChg {
-			bucket.OTMOIChg += event.OIChg
-		}
+		key := strings.ToLower(underlying)
+		eventsByUnderlying[key] = append(eventsByUnderlying[key], event)
 	}
+	aggRows := make([]flowUnderlyingAgg, 0, len(eventsByUnderlying))
+	for _, events := range eventsByUnderlying {
+		if len(events) == 0 {
+			continue
+		}
+		agg := flowUnderlyingAgg{
+			Underlying:     events[0].Underlying,
+			ContractImpact: make(map[string]float64),
+		}
+		if strings.TrimSpace(agg.Underlying) == "" {
+			agg.Underlying = events[0].Contract
+		}
+		for _, event := range events {
+			if event.WeightDirection == 0 &&
+				event.WeightVol == 0 &&
+				event.WeightGamma == 0 &&
+				event.WeightTheta == 0 &&
+				event.WeightPosition == 0 {
+				continue
+			}
+			dirContrib := event.WeightDirection * event.DirectionScore * event.Delta
+			volContrib := event.WeightVol * event.VolScore * event.Vega
+			gammaContrib := event.WeightGamma * event.GammaScore * event.Gamma
+			thetaContrib := event.WeightTheta * event.ThetaScore * event.Theta
+			posContrib := event.WeightPosition * event.PositionScore
 
-	aggRows := make([]flowAggRow, 0, len(rowMap))
-	for _, row := range rowMap {
-		aggRows = append(aggRows, *row)
+			agg.UnderDirection += dirContrib
+			agg.UnderVol += volContrib
+			agg.UnderGamma += gammaContrib
+			agg.UnderTheta += thetaContrib
+			agg.UnderPosition += posContrib
+
+			dirAbs := math.Abs(dirContrib)
+			volAbs := math.Abs(volContrib)
+			gammaAbs := math.Abs(gammaContrib)
+			thetaAbs := math.Abs(thetaContrib)
+			posAbs := math.Abs(posContrib)
+
+			agg.DirConfNum += dirAbs * (event.QDirection * event.GDirection)
+			agg.DirConfDen += dirAbs
+			agg.VolConfNum += volAbs * (event.QVol * event.GVol)
+			agg.VolConfDen += volAbs
+			agg.GammaConfNum += gammaAbs * (event.QGamma * event.GGamma)
+			agg.GammaConfDen += gammaAbs
+			agg.ThetaConfNum += thetaAbs * (event.QTheta * event.GTheta)
+			agg.ThetaConfDen += thetaAbs
+			agg.PosConfNum += posAbs * (event.QPosition * event.GPosition)
+			agg.PosConfDen += posAbs
+
+			impact := dirAbs + volAbs + gammaAbs + thetaAbs + posAbs
+			agg.ContractImpact[event.Contract] += impact
+		}
+		agg.PatternHint = applyPatternOverlay(events, &agg)
+		totalImpact := math.Abs(agg.UnderDirection) + math.Abs(agg.UnderVol) + math.Abs(agg.UnderGamma) + math.Abs(agg.UnderTheta) + math.Abs(agg.UnderPosition)
+		if totalImpact == 0 {
+			continue
+		}
+		aggRows = append(aggRows, agg)
 	}
 	if len(aggRows) == 0 {
 		ui.flowHasResult = false
@@ -1974,27 +2165,31 @@ func (ui *UI) renderFlowAggregation() {
 		fillFlowTable(ui.liveFlow, nil)
 		return
 	}
-	sortFlowAggRows(aggRows, ui.flowSortBy, ui.flowSortAsc)
+
+	sort.SliceStable(aggRows, func(i, j int) bool {
+		left := aggregateConfidence(aggRows[i])
+		right := aggregateConfidence(aggRows[j])
+		if left == right {
+			return strings.ToLower(aggRows[i].Underlying) < strings.ToLower(aggRows[j].Underlying)
+		}
+		return left > right
+	})
+
 	displayRows := make([]FlowRow, 0, len(aggRows))
-	for _, row := range aggRows {
-		itmText := "-"
-		if row.ITMWeightDen > 0 {
-			itmText = formatPercent(row.ITMWeightNum / row.ITMWeightDen)
-		}
-		otmText := "-"
-		if row.OTMWeightDen > 0 {
-			otmText = formatPercent(row.OTMWeightNum / row.OTMWeightDen)
-		}
+	for _, agg := range aggRows {
 		displayRows = append(displayRows, FlowRow{
-			Symbol:        row.Symbol,
-			Underlying:    row.Underlying,
-			TotalTurnover: formatFloat(row.TotalTurnover),
-			ITM:           itmText,
-			ITMTurnover:   formatFloat(row.ITMTurnover),
-			ITMOIChg:      formatFloat(row.ITMOIChg),
-			OTM:           otmText,
-			OTMTurnover:   formatFloat(row.OTMTurnover),
-			OTMOIChg:      formatFloat(row.OTMOIChg),
+			Underlying:  agg.Underlying,
+			Direction:   classifyDirectionIntent(agg.UnderDirection),
+			Vol:         classifyVolIntent(agg.UnderVol),
+			Gamma:       classifyGammaIntent(agg.UnderGamma),
+			Theta:       classifyThetaIntent(agg.UnderTheta),
+			Position:    classifyPositionIntent(agg.UnderPosition),
+			Confidence:  fmt.Sprintf("%.2f", aggregateConfidence(agg)),
+			PatternHint: defaultDash(agg.PatternHint),
+			TopContracts: defaultDash(strings.Join(
+				topContracts(agg.ContractImpact, 2),
+				",",
+			)),
 		})
 	}
 
@@ -2007,38 +2202,975 @@ func (ui *UI) renderFlowAggregation() {
 	fillFlowTable(ui.liveFlow, displayRows)
 }
 
+func aggregateConfidence(agg flowUnderlyingAgg) float64 {
+	values := []float64{
+		ratioOrZero(agg.DirConfNum, agg.DirConfDen),
+		ratioOrZero(agg.VolConfNum, agg.VolConfDen),
+		ratioOrZero(agg.GammaConfNum, agg.GammaConfDen),
+		ratioOrZero(agg.ThetaConfNum, agg.ThetaConfDen),
+		ratioOrZero(agg.PosConfNum, agg.PosConfDen),
+	}
+	sum := 0.0
+	count := 0.0
+	for _, v := range values {
+		if v <= 0 {
+			continue
+		}
+		sum += v
+		count++
+	}
+	if count == 0 {
+		return 0
+	}
+	return sum / count
+}
+
+func ratioOrZero(numerator, denominator float64) float64 {
+	if denominator <= 0 {
+		return 0
+	}
+	return numerator / denominator
+}
+
+func defaultDash(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return "-"
+	}
+	return text
+}
+
+func topContracts(contractImpact map[string]float64, limit int) []string {
+	if len(contractImpact) == 0 || limit <= 0 {
+		return nil
+	}
+	type kv struct {
+		Contract string
+		Impact   float64
+	}
+	items := make([]kv, 0, len(contractImpact))
+	for contract, impact := range contractImpact {
+		items = append(items, kv{Contract: contract, Impact: impact})
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		left := math.Abs(items[i].Impact)
+		right := math.Abs(items[j].Impact)
+		if left == right {
+			return strings.ToLower(items[i].Contract) < strings.ToLower(items[j].Contract)
+		}
+		return left > right
+	})
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		out = append(out, item.Contract)
+	}
+	return out
+}
+
+func classifyDirectionIntent(value float64) string {
+	if math.Abs(value) < flowNeutralThreshold {
+		return "NEUTRAL"
+	}
+	if value > 0 {
+		return "BULL"
+	}
+	return "BEAR"
+}
+
+func classifyVolIntent(value float64) string {
+	if math.Abs(value) < flowNeutralThreshold {
+		return "NEUTRAL"
+	}
+	if value > 0 {
+		return "LONG_VOL"
+	}
+	return "SHORT_VOL"
+}
+
+func classifyGammaIntent(value float64) string {
+	if math.Abs(value) < flowNeutralThreshold {
+		return "NEUTRAL"
+	}
+	if value > 0 {
+		return "LONG_GAMMA"
+	}
+	return "SHORT_GAMMA"
+}
+
+func classifyThetaIntent(value float64) string {
+	if math.Abs(value) < flowNeutralThreshold {
+		return "NEUTRAL"
+	}
+	if value > 0 {
+		return "THETA+"
+	}
+	return "THETA-"
+}
+
+func classifyPositionIntent(value float64) string {
+	if math.Abs(value) < flowNeutralThreshold {
+		return "MIXED"
+	}
+	if value > 0 {
+		return "BUILD"
+	}
+	return "REDUCE"
+}
+
+func applyPatternOverlay(events []flowEvent, agg *flowUnderlyingAgg) string {
+	if len(events) < 2 || agg == nil {
+		return ""
+	}
+	candidates := make([]flowPairCandidate, 0)
+	for i := 0; i < len(events); i++ {
+		for j := i + 1; j < len(events); j++ {
+			left := events[i]
+			right := events[j]
+			if !canPairOverlay(left, right) {
+				continue
+			}
+			timeGap := absInt64(left.TS - right.TS)
+			balance := clipFloat(1.0-math.Abs(math.Log((left.WTrigger+1e-9)/(right.WTrigger+1e-9)))/math.Log(2), 0, 1)
+			timeScore := clipFloat(1.0-float64(timeGap)/2000.0, 0, 1)
+			pairType := "STRANGLE"
+			if left.HasDelta && right.HasDelta {
+				if math.Abs(math.Abs(left.Delta)-math.Abs(right.Delta)) <= 0.10 {
+					pairType = "STRADDLE"
+				}
+			}
+			candidates = append(candidates, flowPairCandidate{
+				A:         i,
+				B:         j,
+				PairType:  pairType,
+				ComboID:   overlayComboID(left, right),
+				SizeRaw:   math.Min(left.WeightVol, right.WeightVol),
+				TimeGapMS: timeGap,
+				Balance:   balance,
+				TimeScore: timeScore,
+				EventIDA:  left.Key,
+				EventIDB:  right.Key,
+			})
+		}
+	}
+	if len(candidates) == 0 {
+		return ""
+	}
+	sizes := make([]float64, 0, len(candidates))
+	for _, candidate := range candidates {
+		sizes = append(sizes, candidate.SizeRaw)
+	}
+	sizeRef := percentile95(sizes)
+	if sizeRef <= 0 {
+		sizeRef = 1
+	}
+	for idx := range candidates {
+		candidates[idx].SizeScore = clipFloat(candidates[idx].SizeRaw/sizeRef, 0, 1)
+		candidates[idx].PairScore = candidates[idx].SizeScore * candidates[idx].Balance * candidates[idx].TimeScore
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		left := candidates[i]
+		right := candidates[j]
+		if left.PairScore == right.PairScore {
+			if left.TimeGapMS == right.TimeGapMS {
+				leftPair := left.EventIDA + "|" + left.EventIDB
+				rightPair := right.EventIDA + "|" + right.EventIDB
+				return leftPair < rightPair
+			}
+			return left.TimeGapMS < right.TimeGapMS
+		}
+		return left.PairScore > right.PairScore
+	})
+	used := make(map[int]struct{})
+	straddleCount := 0
+	strangleCount := 0
+	for _, candidate := range candidates {
+		if _, ok := used[candidate.A]; ok {
+			continue
+		}
+		if _, ok := used[candidate.B]; ok {
+			continue
+		}
+		used[candidate.A] = struct{}{}
+		used[candidate.B] = struct{}{}
+		left := events[candidate.A]
+		right := events[candidate.B]
+		sign := scoreSign(left.DirectionScore)
+		if sign == 0 {
+			continue
+		}
+		comboWeightVol := math.Min(left.WeightVol, right.WeightVol)
+		comboWeightGamma := math.Min(left.WeightGamma, right.WeightGamma)
+		comboWeightTheta := math.Min(left.WeightTheta, right.WeightTheta)
+
+		comboVega := left.Vega + right.Vega
+		comboGammaGreek := left.Gamma + right.Gamma
+		comboThetaGreek := left.Theta + right.Theta
+
+		legVol := left.WeightVol*left.VolScore*left.Vega + right.WeightVol*right.VolScore*right.Vega
+		legGamma := left.WeightGamma*left.GammaScore*left.Gamma + right.WeightGamma*right.GammaScore*right.Gamma
+		legTheta := left.WeightTheta*left.ThetaScore*left.Theta + right.WeightTheta*right.ThetaScore*right.Theta
+
+		comboVol := comboWeightVol * float64(sign) * comboVega
+		comboGamma := comboWeightGamma * float64(sign) * comboGammaGreek
+		comboTheta := comboWeightTheta * float64(-sign) * comboThetaGreek
+
+		agg.UnderVol += comboVol - legVol
+		agg.UnderGamma += comboGamma - legGamma
+		agg.UnderTheta += comboTheta - legTheta
+
+		if candidate.PairType == "STRADDLE" {
+			straddleCount++
+		} else {
+			strangleCount++
+		}
+	}
+	parts := make([]string, 0, 2)
+	if straddleCount > 0 {
+		parts = append(parts, fmt.Sprintf("STRADDLE×%d", straddleCount))
+	}
+	if strangleCount > 0 {
+		parts = append(parts, fmt.Sprintf("STRANGLE×%d", strangleCount))
+	}
+	return strings.Join(parts, " / ")
+}
+
+func canPairOverlay(left, right flowEvent) bool {
+	leftCP := strings.ToLower(strings.TrimSpace(left.CP))
+	rightCP := strings.ToLower(strings.TrimSpace(right.CP))
+	if (leftCP != "c" && leftCP != "p") || (rightCP != "c" && rightCP != "p") {
+		return false
+	}
+	if leftCP == rightCP {
+		return false
+	}
+	if !sameExpiryBucket(left, right) {
+		return false
+	}
+	if absInt64(left.TS-right.TS) > 2000 {
+		return false
+	}
+	if !sameSignStrong(left.DirectionScore, right.DirectionScore) {
+		return false
+	}
+	if left.WTrigger <= 0 || right.WTrigger <= 0 {
+		return false
+	}
+	ratio := left.WTrigger / (right.WTrigger + 1e-9)
+	if ratio < 0.5 || ratio > 2.0 {
+		return false
+	}
+	if !left.QBookOK || !right.QBookOK {
+		return false
+	}
+	if !left.GreeksReady || !right.GreeksReady {
+		return false
+	}
+	if left.WeightVol <= 0 || right.WeightVol <= 0 {
+		return false
+	}
+	return true
+}
+
+func sameExpiryBucket(left, right flowEvent) bool {
+	leftExpiry := strings.TrimSpace(left.Expiry)
+	rightExpiry := strings.TrimSpace(right.Expiry)
+	if leftExpiry != "" && rightExpiry != "" {
+		return strings.EqualFold(leftExpiry, rightExpiry)
+	}
+	if left.HasTTE && right.HasTTE {
+		return math.Abs(left.TTE-right.TTE) <= 1.0
+	}
+	return false
+}
+
+func overlayComboID(left, right flowEvent) string {
+	underlying := strings.ToLower(strings.TrimSpace(left.Underlying))
+	if underlying == "" {
+		underlying = strings.ToLower(strings.TrimSpace(right.Underlying))
+	}
+	expiryBucket := strings.ToLower(strings.TrimSpace(left.Expiry))
+	if expiryBucket == "" {
+		expiryBucket = strings.ToLower(strings.TrimSpace(right.Expiry))
+	}
+	if expiryBucket == "" {
+		expiryBucket = overlayTTEBucket(left, right)
+	}
+	minTS := left.TS
+	maxTS := right.TS
+	if minTS > maxTS {
+		minTS, maxTS = maxTS, minTS
+	}
+	return strings.Join([]string{
+		"combo_v1",
+		underlying,
+		expiryBucket,
+		strconv.FormatInt(minTS, 10),
+		strconv.FormatInt(maxTS, 10),
+		"C+P",
+	}, "|")
+}
+
+func overlayTTEBucket(left, right flowEvent) string {
+	avg := 0.0
+	count := 0.0
+	if left.HasTTE {
+		avg += left.TTE
+		count++
+	}
+	if right.HasTTE {
+		avg += right.TTE
+		count++
+	}
+	if count == 0 {
+		return "tte_unknown"
+	}
+	avg = avg / count
+	if avg <= 7 {
+		return "tte_short"
+	}
+	if avg <= 30 {
+		return "tte_mid"
+	}
+	return "tte_long"
+}
+
+func sameSignStrong(left, right float64) bool {
+	if math.Abs(left) < 0.4 || math.Abs(right) < 0.4 {
+		return false
+	}
+	return scoreSign(left) == scoreSign(right)
+}
+
+func scoreSign(value float64) int {
+	if value > 0 {
+		return 1
+	}
+	if value < 0 {
+		return -1
+	}
+	return 0
+}
+
+func percentile95(values []float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	sorted := append([]float64(nil), values...)
+	sort.Float64s(sorted)
+	index := int(math.Ceil(0.95*float64(len(sorted)))) - 1
+	if index < 0 {
+		index = 0
+	}
+	if index >= len(sorted) {
+		index = len(sorted) - 1
+	}
+	return sorted[index]
+}
+
 func toFlowEvent(row map[string]any) (flowEvent, bool) {
+	event, _, ok := toFlowEventWithContext(row, optionFrame{}, nil)
+	return event, ok
+}
+
+func toFlowEventWithContext(row map[string]any, prevFrame optionFrame, optionRow map[string]any) (flowEvent, optionFrame, bool) {
 	contract := strings.TrimSpace(asString(row["ctp_contract"]))
 	if contract == "" {
-		return flowEvent{}, false
+		return flowEvent{}, optionFrame{}, false
 	}
-	cp := strings.TrimSpace(asString(row["cp"]))
+	cp := strings.ToLower(strings.TrimSpace(asString(row["cp"])))
+	if cp == "" && optionRow != nil {
+		cp = strings.ToLower(strings.TrimSpace(asString(optionRow["option_type"])))
+	}
+	if cp != "c" && cp != "p" {
+		cp = inferOptionTypeFromContract(contract)
+	}
 	tsMillis := flowEventTS(row)
+
+	currFrame := buildOptionFrame(row, optionRow, tsMillis)
+	recoverMissingFrameFields(&currFrame, prevFrame)
+
+	dLast, hasDLast := diffWithFlag(currFrame.Last, currFrame.HasLast, prevFrame.Last, prevFrame.HasLast)
+	retLast := 0.0
+	if hasDLast && prevFrame.HasLast && prevFrame.Last > 0 {
+		retLast = dLast / math.Max(prevFrame.Last, 1e-9)
+	}
+	dTurnover, hasDTurnover := diffWithFallback(currFrame.Turnover, currFrame.HasTurnover, prevFrame.Turnover, prevFrame.HasTurnover, currFrame.TurnoverChg, currFrame.HasTurnoverChg)
+	dVolume, hasDVolume := diffWithFlag(currFrame.Volume, currFrame.HasVolume, prevFrame.Volume, prevFrame.HasVolume)
+	dOI, hasDOI := diffWithFallback(currFrame.OpenInterest, currFrame.HasOpenInterest, prevFrame.OpenInterest, prevFrame.HasOpenInterest, currFrame.OIChg, currFrame.HasOIChg)
+
+	spreadCurr, hasSpreadCurr := spread(currFrame.Bid1, currFrame.HasBid1, currFrame.Ask1, currFrame.HasAsk1)
+	spreadPrev, _ := spread(prevFrame.Bid1, prevFrame.HasBid1, prevFrame.Ask1, prevFrame.HasAsk1)
+	_, _ = depthImbalance(currFrame.BidVol1, currFrame.HasBidVol1, currFrame.AskVol1, currFrame.HasAskVol1)
+	_, _ = depthImbalance(prevFrame.BidVol1, prevFrame.HasBidVol1, prevFrame.AskVol1, prevFrame.HasAskVol1)
+	midCurr, hasMidCurr := midPrice(currFrame.Bid1, currFrame.HasBid1, currFrame.Ask1, currFrame.HasAsk1)
+	midPrev, hasMidPrev := midPrice(prevFrame.Bid1, prevFrame.HasBid1, prevFrame.Ask1, prevFrame.HasAsk1)
+	lastVsMidCurr, hasLastVsMidCurr := 0.0, false
+	lastVsMidPrev, hasLastVsMidPrev := 0.0, false
+	if currFrame.HasLast && hasMidCurr {
+		lastVsMidCurr = currFrame.Last - midCurr
+		hasLastVsMidCurr = true
+	}
+	if prevFrame.HasLast && hasMidPrev {
+		lastVsMidPrev = prevFrame.Last - midPrev
+		hasLastVsMidPrev = true
+	}
+	dLastVsMid := 0.0
+	hasDLastVsMid := false
+	if hasLastVsMidCurr && hasLastVsMidPrev {
+		dLastVsMid = lastVsMidCurr - lastVsMidPrev
+		hasDLastVsMid = true
+	}
+	bookVWAPCurr, hasBookVWAPCurr := bookVWAP(currFrame)
+	bookVWAPPrev, hasBookVWAPPrev := bookVWAP(prevFrame)
+	lastVsBookCurr, hasLastVsBookCurr := 0.0, false
+	lastVsBookPrev, hasLastVsBookPrev := 0.0, false
+	if currFrame.HasLast && hasBookVWAPCurr {
+		lastVsBookCurr = currFrame.Last - bookVWAPCurr
+		hasLastVsBookCurr = true
+	}
+	if prevFrame.HasLast && hasBookVWAPPrev {
+		lastVsBookPrev = prevFrame.Last - bookVWAPPrev
+		hasLastVsBookPrev = true
+	}
+	dLastVsBook := 0.0
+	hasDLastVsBook := false
+	if hasLastVsBookCurr && hasLastVsBookPrev {
+		dLastVsBook = lastVsBookCurr - lastVsBookPrev
+		hasDLastVsBook = true
+	}
+
+	obLoc, obLocOK := weightedAvailable([]float64{
+		normBy(lastVsMidCurr, math.Max(spreadCurr, 1e-9)),
+		normBy(lastVsBookCurr, math.Max(spreadCurr, 1e-9)),
+	}, []float64{0.6, 0.4}, []bool{hasLastVsMidCurr && hasSpreadCurr, hasLastVsBookCurr && hasSpreadCurr})
+	obChg, obChgOK := weightedAvailable([]float64{
+		normBy(dLastVsMid, math.Max(math.Abs(spreadCurr)+math.Abs(spreadPrev), 1e-9)),
+		normBy(dLastVsBook, math.Max(math.Abs(spreadCurr)+math.Abs(spreadPrev), 1e-9)),
+	}, []float64{0.6, 0.4}, []bool{hasDLastVsMid, hasDLastVsBook})
+	orderbookScore, _ := weightedAvailable([]float64{obLoc, obChg}, []float64{0.6, 0.4}, []bool{obLocOK, obChgOK})
+	orderbookScore = clipFloat(orderbookScore, -1, 1)
+
+	rangePos, hasRangePos := rangePosition(currFrame)
+	pxMom, _ := weightedAvailable([]float64{
+		normBy(retLast, 0.003),
+		normBy(rangePos-0.5, 0.25),
+	}, []float64{0.7, 0.3}, []bool{hasDLast && prevFrame.HasLast, hasRangePos})
+
+	flow := 0.0
+	if hasDTurnover && dTurnover > 0 {
+		scale := math.Max(math.Abs(prevFrame.Turnover), 1)
+		if !prevFrame.HasTurnover || scale <= 0 {
+			scale = math.Max(math.Abs(dTurnover), 1)
+		}
+		flow = normBy(dTurnover, scale)
+	} else if hasDVolume && dVolume != 0 {
+		scale := math.Max(math.Abs(prevFrame.Volume), 1)
+		if !prevFrame.HasVolume || scale <= 0 {
+			scale = math.Max(math.Abs(dVolume), 1)
+		}
+		flow = normBy(dVolume, scale)
+	}
+	directionScore := clipFloat(0.55*orderbookScore+0.25*pxMom+0.20*flow, -1, 1)
+
+	positionScore := 0.0
+	if hasDOI {
+		den := math.Max(0.5*(math.Abs(currFrame.OpenInterest)+math.Abs(prevFrame.OpenInterest)), 1)
+		if !currFrame.HasOpenInterest || !prevFrame.HasOpenInterest {
+			den = math.Max(math.Abs(dOI), 1)
+		}
+		positionScore = clipFloat(normBy(dOI, den), -1, 1)
+	}
+
 	strike, hasStrike := asOptionalFloat(row["strike"])
-	turnover, hasTurnover := asOptionalFloat(row["turnover_chg"])
+	if !hasStrike && optionRow != nil {
+		strike, hasStrike = asOptionalFloat(optionRow["strike"])
+	}
+	delta, hasDelta := optionalFloatFromSources(row, optionRow, "delta")
+	gamma, hasGamma := optionalFloatFromSources(row, optionRow, "gamma")
+	vega, hasVega := optionalFloatFromSources(row, optionRow, "vega")
+	thetaGreek, hasTheta := optionalFloatFromSources(row, optionRow, "theta")
+
+	absDelta := math.Abs(delta)
+	otmLike := 0.0
+	itmLike := 0.0
+	if hasDelta {
+		if absDelta <= 0.35 {
+			otmLike = 1
+		}
+		if absDelta >= 0.65 {
+			itmLike = 1
+		}
+	}
+	tte := currFrame.TTE
+	hasTTE := currFrame.HasTTE
+	shortTTE := 0.0
+	if hasTTE && tte <= 7 {
+		shortTTE = 1
+	}
+	gammaScore := 0.0
+	volScore := 0.0
+	if hasDelta {
+		gammaScore = clipFloat(directionScore*(0.7*otmLike+0.3*shortTTE), -1, 1)
+		volScore = clipFloat(directionScore*(0.6*otmLike+0.2*shortTTE+0.2*(1-itmLike)), -1, 1)
+	}
+	thetaScore := clipFloat(-directionScore, -1, 1)
+
+	turnoverChg, hasTurnoverChg := asOptionalFloat(row["turnover_chg"])
+	turnoverRatio, hasTurnoverRatio := asOptionalFloat(row["turnover_ratio"])
 	oiChg, hasOIChg := asOptionalFloat(row["oi_chg"])
-	key := fmt.Sprintf(
-		"%d|%s|%s|%s|%s",
-		tsMillis,
-		strings.ToLower(contract),
-		strings.ToUpper(strings.TrimSpace(asString(row["tag"]))),
-		strings.ToLower(cp),
-		formatOptionalFloat(strike, hasStrike),
-	)
-	return flowEvent{
-		Key:         key,
-		TS:          tsMillis,
-		Contract:    contract,
-		Symbol:      strings.TrimSpace(asString(row["symbol"])),
-		Underlying:  strings.TrimSpace(asString(row["underlying"])),
-		CP:          cp,
-		Strike:      strike,
-		HasStrike:   hasStrike,
-		Turnover:    turnover,
-		HasTurnover: hasTurnover,
-		OIChg:       oiChg,
-		HasOIChg:    hasOIChg,
-	}, true
+	oiRatio, hasOIRatio := asOptionalFloat(row["oi_ratio"])
+
+	price := currFrame.Last
+	wTurn := 0.0
+	if hasTurnoverChg {
+		wTurn = math.Max(turnoverChg, 0)
+	}
+	wOI := 0.0
+	if hasOIChg {
+		wOI = math.Max(math.Abs(oiChg)*math.Max(price, 0), 0)
+	}
+	wTrigger := wTurn + wOI
+	if wTrigger <= 0 {
+		return flowEvent{}, currFrame, false
+	}
+
+	qTurn := 0.0
+	wTurnEff := 0.0
+	if wTurn > 0 {
+		if hasTurnoverRatio {
+			if turnoverRatio < 0 {
+				wTurnEff = 0
+				qTurn = 0
+			} else {
+				wTurnEff = wTurn
+				qTurn = clipFloat(turnoverRatio/5.0, 0, 1)
+			}
+		} else {
+			wTurnEff = wTurn
+			qTurn = 1
+		}
+	}
+	qOI := 0.0
+	wOIEff := 0.0
+	if wOI > 0 {
+		if hasOIRatio {
+			qOI = clipFloat(math.Abs(oiRatio)/5.0, 0, 1)
+			wOIEff = wOI
+		} else {
+			qOI = 1
+			wOIEff = wOI
+		}
+	}
+	qTrig := 0.0
+	availTrig := false
+	if wTurnEff+wOIEff > 0 {
+		availTrig = true
+		qTrig = (wTurnEff/(wTurnEff+wOIEff+1e-9))*qTurn + (wOIEff/(wTurnEff+wOIEff+1e-9))*qOI
+	}
+
+	inconsistent := false
+	qData := 1.0
+	if hasTurnoverChg && hasDTurnover {
+		if scoreSign(turnoverChg) != scoreSign(dTurnover) {
+			inconsistent = true
+		} else if math.Abs(turnoverChg) > 0 {
+			diffRatio := math.Abs(dTurnover-turnoverChg) / math.Max(math.Abs(turnoverChg), 1e-9)
+			if diffRatio > 0.5 {
+				inconsistent = true
+			}
+		}
+	}
+	if hasOIChg && hasDOI {
+		if scoreSign(oiChg) != scoreSign(dOI) {
+			inconsistent = true
+		}
+	}
+	if inconsistent {
+		qData = 0.5
+	}
+
+	qBook := 0.0
+	qBookOK := false
+	bookCurrComplete := currFrame.HasBid1 && currFrame.HasAsk1 && currFrame.HasBidVol1 && currFrame.HasAskVol1
+	bookPrevComplete := prevFrame.HasBid1 && prevFrame.HasAsk1 && prevFrame.HasBidVol1 && prevFrame.HasAskVol1
+	availBook := false
+	if bookCurrComplete && bookPrevComplete {
+		qBook = 1
+		qBookOK = true
+		availBook = true
+	} else if (currFrame.HasBid1 && currFrame.HasAsk1) || (currFrame.HasBidVol1 && currFrame.HasAskVol1) {
+		qBook = 0.5
+		availBook = true
+	}
+
+	gDirection := boolToFloat(hasDelta)
+	gVol := boolToFloat(hasVega && hasDelta)
+	gGamma := boolToFloat(hasGamma && hasDelta)
+	gTheta := boolToFloat(hasTheta && hasDelta)
+	gPosition := 1.0
+
+	qDirection := axisQuality(qTrig, qData, qBook, availTrig, true, availBook, flowQualityCap)
+	qVol := axisQuality(qTrig, qData, qBook, availTrig, true, availBook, flowQualityCap)
+	qGamma := axisQuality(qTrig, qData, qBook, availTrig, true, availBook, flowQualityCap)
+	qTheta := axisQuality(qTrig, qData, qBook, availTrig, true, availBook, flowQualityCap)
+	qPosition := axisQuality(qTrig, qData, qBook, availTrig, true, false, flowPositionCap)
+
+	weightDirection := wTrigger * qDirection * gDirection
+	weightVol := wTrigger * qVol * gVol
+	weightGamma := wTrigger * qGamma * gGamma
+	weightTheta := wTrigger * qTheta * gTheta
+	weightPosition := wTrigger * qPosition * gPosition
+
+	event := flowEvent{
+		Key:             flowEventID(row, contract, cp, strike, hasStrike),
+		TS:              tsMillis,
+		Contract:        contract,
+		Symbol:          firstNonEmpty(strings.TrimSpace(asString(row["symbol"])), inferContractRoot(contract)),
+		Underlying:      firstNonEmpty(strings.TrimSpace(asString(row["underlying"])), strings.TrimSpace(asString(optionValue(optionRow, "underlying"))), contract),
+		CP:              cp,
+		Strike:          strike,
+		HasStrike:       hasStrike,
+		Turnover:        turnoverChg,
+		HasTurnover:     hasTurnoverChg,
+		OIChg:           oiChg,
+		HasOIChg:        hasOIChg,
+		TTE:             tte,
+		HasTTE:          hasTTE,
+		Expiry:          firstNonEmpty(strings.TrimSpace(asString(row["expiry_date"])), strings.TrimSpace(asString(optionValue(optionRow, "expiry_date")))),
+		Tag:             strings.ToUpper(firstNonEmpty(strings.TrimSpace(asString(row["tag"])), "TURNOVER")),
+		WTurn:           wTurn,
+		WOI:             wOI,
+		WTrigger:        wTrigger,
+		QData:           qData,
+		QBook:           qBook,
+		QBookOK:         qBookOK,
+		DirectionScore:  directionScore,
+		VolScore:        volScore,
+		GammaScore:      gammaScore,
+		ThetaScore:      thetaScore,
+		PositionScore:   positionScore,
+		OrderbookScore:  orderbookScore,
+		Delta:           delta,
+		Gamma:           gamma,
+		Vega:            vega,
+		Theta:           thetaGreek,
+		HasDelta:        hasDelta,
+		HasGamma:        hasGamma,
+		HasVega:         hasVega,
+		HasTheta:        hasTheta,
+		GreeksReady:     hasDelta && hasGamma && hasVega && hasTheta,
+		GDirection:      gDirection,
+		GVol:            gVol,
+		GGamma:          gGamma,
+		GTheta:          gTheta,
+		GPosition:       gPosition,
+		QDirection:      qDirection,
+		QVol:            qVol,
+		QGamma:          qGamma,
+		QTheta:          qTheta,
+		QPosition:       qPosition,
+		WeightDirection: weightDirection,
+		WeightVol:       weightVol,
+		WeightGamma:     weightGamma,
+		WeightTheta:     weightTheta,
+		WeightPosition:  weightPosition,
+	}
+	return event, currFrame, true
+}
+
+func optionValue(row map[string]any, key string) any {
+	if row == nil {
+		return nil
+	}
+	return row[key]
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func buildOptionRowsByContract(rows []map[string]any) map[string]map[string]any {
+	result := make(map[string]map[string]any, len(rows))
+	for _, row := range rows {
+		contract := strings.ToLower(strings.TrimSpace(asString(row["ctp_contract"])))
+		if contract == "" {
+			continue
+		}
+		if _, exists := result[contract]; exists {
+			continue
+		}
+		result[contract] = row
+	}
+	return result
+}
+
+func buildOptionFrame(row map[string]any, optionRow map[string]any, ts int64) optionFrame {
+	frame := optionFrame{TS: ts}
+	frame.Last, frame.HasLast = asOptionalFloat(row["price"])
+	if !frame.HasLast {
+		frame.Last, frame.HasLast = asOptionalFloat(row["last"])
+	}
+	if !frame.HasLast && optionRow != nil {
+		frame.Last, frame.HasLast = asOptionalFloat(optionRow["last"])
+	}
+	frame.High, frame.HasHigh = asOptionalFloat(row["high"])
+	frame.Low, frame.HasLow = asOptionalFloat(row["low"])
+	frame.Volume, frame.HasVolume = asOptionalFloat(row["volume"])
+	frame.Turnover, frame.HasTurnover = asOptionalFloat(row["turnover"])
+	frame.OpenInterest, frame.HasOpenInterest = asOptionalFloat(row["oi"])
+	if !frame.HasOpenInterest {
+		frame.OpenInterest, frame.HasOpenInterest = asOptionalFloat(row["open_interest"])
+	}
+	frame.Bid1, frame.HasBid1 = asOptionalFloat(row["bid1"])
+	frame.Ask1, frame.HasAsk1 = asOptionalFloat(row["ask1"])
+	frame.BidVol1, frame.HasBidVol1 = asOptionalFloat(row["bid_vol1"])
+	frame.AskVol1, frame.HasAskVol1 = asOptionalFloat(row["ask_vol1"])
+	frame.ExpiryDate = strings.TrimSpace(asString(row["expiry_date"]))
+	frame.TTE, frame.HasTTE = asOptionalFloat(row["tte"])
+	if !frame.HasTTE && optionRow != nil {
+		frame.TTE, frame.HasTTE = asOptionalFloat(optionRow["tte"])
+	}
+	frame.TurnoverChg, frame.HasTurnoverChg = asOptionalFloat(row["turnover_chg"])
+	frame.TurnoverRatio, frame.HasTurnoverRatio = asOptionalFloat(row["turnover_ratio"])
+	frame.OIChg, frame.HasOIChg = asOptionalFloat(row["oi_chg"])
+	frame.OIRatio, frame.HasOIRatio = asOptionalFloat(row["oi_ratio"])
+	return frame
+}
+
+func recoverMissingFrameFields(curr *optionFrame, prev optionFrame) {
+	if curr == nil {
+		return
+	}
+	if curr.HasTurnoverChg && !curr.HasTurnover && prev.HasTurnover {
+		curr.Turnover = prev.Turnover + curr.TurnoverChg
+		curr.HasTurnover = true
+	}
+	if curr.HasOIChg && !curr.HasOpenInterest && prev.HasOpenInterest {
+		curr.OpenInterest = prev.OpenInterest + curr.OIChg
+		curr.HasOpenInterest = true
+	}
+	if !curr.HasHigh && curr.HasLast {
+		curr.High = curr.Last
+		curr.HasHigh = true
+	}
+	if !curr.HasLow && curr.HasLast {
+		curr.Low = curr.Last
+		curr.HasLow = true
+	}
+}
+
+func diffWithFlag(curr float64, currOK bool, prev float64, prevOK bool) (float64, bool) {
+	if !currOK || !prevOK {
+		return 0, false
+	}
+	return curr - prev, true
+}
+
+func diffWithFallback(curr float64, currOK bool, prev float64, prevOK bool, fallback float64, fallbackOK bool) (float64, bool) {
+	if currOK && prevOK {
+		return curr - prev, true
+	}
+	if fallbackOK {
+		return fallback, true
+	}
+	return 0, false
+}
+
+func spread(bid float64, hasBid bool, ask float64, hasAsk bool) (float64, bool) {
+	if !hasBid || !hasAsk {
+		return 0, false
+	}
+	return ask - bid, true
+}
+
+func depthImbalance(bidVol float64, hasBidVol bool, askVol float64, hasAskVol bool) (float64, bool) {
+	if !hasBidVol || !hasAskVol {
+		return 0, false
+	}
+	return (bidVol - askVol) / (bidVol + askVol + 1e-9), true
+}
+
+func midPrice(bid float64, hasBid bool, ask float64, hasAsk bool) (float64, bool) {
+	if !hasBid || !hasAsk {
+		return 0, false
+	}
+	return (bid + ask) / 2.0, true
+}
+
+func bookVWAP(frame optionFrame) (float64, bool) {
+	if !frame.HasBid1 || !frame.HasAsk1 || !frame.HasBidVol1 || !frame.HasAskVol1 {
+		return 0, false
+	}
+	return (frame.Bid1*frame.BidVol1 + frame.Ask1*frame.AskVol1) / (frame.BidVol1 + frame.AskVol1 + 1e-9), true
+}
+
+func rangePosition(frame optionFrame) (float64, bool) {
+	if !frame.HasHigh || !frame.HasLow || !frame.HasLast {
+		return 0, false
+	}
+	if frame.High <= frame.Low {
+		return 0.5, true
+	}
+	return (frame.Last - frame.Low) / math.Max(frame.High-frame.Low, 1e-9), true
+}
+
+func weightedAvailable(values []float64, weights []float64, present []bool) (float64, bool) {
+	if len(values) != len(weights) || len(values) != len(present) {
+		return 0, false
+	}
+	sum := 0.0
+	weightSum := 0.0
+	for i := range values {
+		if !present[i] {
+			continue
+		}
+		sum += values[i] * weights[i]
+		weightSum += weights[i]
+	}
+	if weightSum <= 0 {
+		return 0, false
+	}
+	return sum / weightSum, true
+}
+
+func normBy(value, scale float64) float64 {
+	return math.Tanh(value / math.Max(scale, 1e-9))
+}
+
+func optionalFloatFromSources(primary map[string]any, secondary map[string]any, key string) (float64, bool) {
+	value, ok := asOptionalFloat(primary[key])
+	if ok {
+		return value, true
+	}
+	if secondary != nil {
+		return asOptionalFloat(secondary[key])
+	}
+	return 0, false
+}
+
+func axisQuality(qTrig, qData, qBook float64, availTrig, availData, availBook bool, capAxis float64) float64 {
+	alphaTrig := 0.6
+	alphaData := 0.2
+	alphaBook := 0.2
+	type component struct {
+		alpha float64
+		value float64
+	}
+	components := make([]component, 0, 3)
+	if availTrig {
+		components = append(components, component{alpha: alphaTrig, value: qTrig})
+	}
+	if availData {
+		components = append(components, component{alpha: alphaData, value: qData})
+	}
+	if availBook {
+		components = append(components, component{alpha: alphaBook, value: qBook})
+	}
+	if len(components) == 0 {
+		return 0
+	}
+	alphaSum := 0.0
+	for _, component := range components {
+		alphaSum += component.alpha
+	}
+	if alphaSum <= 0 {
+		return 0
+	}
+	type weighted struct {
+		value float64
+		share float64
+	}
+	weightedComponents := make([]weighted, 0, len(components))
+	shareSum := 0.0
+	for _, component := range components {
+		share := component.alpha / alphaSum
+		if share > capAxis {
+			share = capAxis
+		}
+		weightedComponents = append(weightedComponents, weighted{value: component.value, share: share})
+		shareSum += share
+	}
+	if shareSum <= 0 {
+		return 0
+	}
+	q := 0.0
+	for _, component := range weightedComponents {
+		q += (component.share / shareSum) * component.value
+	}
+	return clipFloat(q, 0, 1)
+}
+
+func flowEventID(row map[string]any, contract, cp string, strike float64, hasStrike bool) string {
+	return strings.Join([]string{
+		"v2",
+		normText(contract),
+		normText(strings.TrimSpace(strings.ToUpper(asString(row["tag"])))),
+		normTS(row),
+		normText(cp),
+		normNum(strike, hasStrike),
+		normAnyNum(row["price"]),
+		normAnyNum(row["turnover_chg"]),
+		normAnyNum(row["oi_chg"]),
+	}, "|")
+}
+
+func normText(value string) string {
+	text := strings.TrimSpace(strings.ToLower(value))
+	if text == "" {
+		return "~"
+	}
+	return text
+}
+
+func normNum(value float64, ok bool) string {
+	if !ok || math.IsNaN(value) || math.IsInf(value, 0) {
+		return "~"
+	}
+	return strconv.FormatFloat(value, 'f', 6, 64)
+}
+
+func normAnyNum(value any) string {
+	cast, ok := asOptionalFloat(value)
+	return normNum(cast, ok)
+}
+
+func normTS(row map[string]any) string {
+	ts := flowEventTS(row)
+	if ts <= 0 {
+		return "0"
+	}
+	return strconv.FormatInt(ts, 10)
+}
+
+func boolToFloat(value bool) float64 {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+func clipFloat(value, minValue, maxValue float64) float64 {
+	if value < minValue {
+		return minValue
+	}
+	if value > maxValue {
+		return maxValue
+	}
+	return value
+}
+
+func absInt64(value int64) int64 {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 func flowEventTS(row map[string]any) int64 {
@@ -2091,70 +3223,6 @@ func inferContractRoot(contract string) string {
 		return contract
 	}
 	return root
-}
-
-func sortFlowAggRows(rows []flowAggRow, sortBy string, asc bool) {
-	key := strings.TrimSpace(strings.ToLower(sortBy))
-	if key == "" {
-		key = "total_turnover_sum"
-	}
-	sort.SliceStable(rows, func(i, j int) bool {
-		leftMetric, leftOK, leftText := flowSortValue(rows[i], key)
-		rightMetric, rightOK, rightText := flowSortValue(rows[j], key)
-		if leftOK != rightOK {
-			return leftOK
-		}
-		if leftOK && rightOK {
-			if leftMetric == rightMetric {
-				if asc {
-					return strings.ToLower(rows[i].Underlying) < strings.ToLower(rows[j].Underlying)
-				}
-				return strings.ToLower(rows[i].Underlying) > strings.ToLower(rows[j].Underlying)
-			}
-			if asc {
-				return leftMetric < rightMetric
-			}
-			return leftMetric > rightMetric
-		}
-		ls := strings.ToLower(leftText)
-		rs := strings.ToLower(rightText)
-		if ls == rs {
-			return strings.ToLower(rows[i].Underlying) < strings.ToLower(rows[j].Underlying)
-		}
-		if asc {
-			return ls < rs
-		}
-		return ls > rs
-	})
-}
-
-func flowSortValue(row flowAggRow, key string) (float64, bool, string) {
-	switch key {
-	case "symbol":
-		return 0, false, row.Symbol
-	case "underlying":
-		return 0, false, row.Underlying
-	case "itm":
-		if row.ITMWeightDen > 0 {
-			return row.ITMWeightNum / row.ITMWeightDen, true, ""
-		}
-		return 0, false, "-"
-	case "otm":
-		if row.OTMWeightDen > 0 {
-			return row.OTMWeightNum / row.OTMWeightDen, true, ""
-		}
-		return 0, false, "-"
-	case "itm_turnover_sum":
-		return row.ITMTurnover, true, ""
-	case "itm_oi_chg_sum":
-		return row.ITMOIChg, true, ""
-	case "otm_turnover_sum":
-		return row.OTMTurnover, true, ""
-	case "otm_oi_chg_sum":
-		return row.OTMOIChg, true, ""
-	default:
-		return row.TotalTurnover, true, ""
-	}
 }
 
 func extractCurveContracts(rows []map[string]any) []string {

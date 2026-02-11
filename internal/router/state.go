@@ -178,11 +178,60 @@ func (s *State) UpdateUnusual(snapshot UnusualSnapshot) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.unusualSeq++
+	snapshot.Rows = enrichUnusualRowsWithGreeks(snapshot.Rows, s.options.Rows)
 	s.unusual = snapshot
 	s.unusual.SchemaVersion = 1
 	s.unusual.Seq = s.unusualSeq
 	s.unusual.Stale = false
 	s.lastUnusual = time.Now()
+}
+
+var unusualGreekFields = []string{
+	"iv",
+	"delta",
+	"gamma",
+	"theta",
+	"vega",
+}
+
+func enrichUnusualRowsWithGreeks(unusualRows, optionsRows []map[string]any) []map[string]any {
+	if len(unusualRows) == 0 || len(optionsRows) == 0 {
+		return unusualRows
+	}
+	optionsByContract := make(map[string]map[string]any, len(optionsRows))
+	for _, optionRow := range optionsRows {
+		contract := strings.ToLower(strings.TrimSpace(toString(optionRow["ctp_contract"])))
+		if contract == "" {
+			continue
+		}
+		if _, exists := optionsByContract[contract]; exists {
+			continue
+		}
+		optionsByContract[contract] = optionRow
+	}
+	if len(optionsByContract) == 0 {
+		return unusualRows
+	}
+	enriched := make([]map[string]any, 0, len(unusualRows))
+	for _, unusualRow := range unusualRows {
+		contract := strings.ToLower(strings.TrimSpace(toString(unusualRow["ctp_contract"])))
+		optionRow, ok := optionsByContract[contract]
+		if !ok {
+			enriched = append(enriched, unusualRow)
+			continue
+		}
+		merged := make(map[string]any, len(unusualRow)+len(unusualGreekFields))
+		for key, value := range unusualRow {
+			merged[key] = value
+		}
+		for _, greekField := range unusualGreekFields {
+			if value, exists := optionRow[greekField]; exists {
+				merged[greekField] = value
+			}
+		}
+		enriched = append(enriched, merged)
+	}
+	return enriched
 }
 
 func (s *State) AppendLog(line LogLine) {

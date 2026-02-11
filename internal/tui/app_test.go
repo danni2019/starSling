@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"math"
 	"strconv"
 	"strings"
 	"testing"
@@ -362,8 +363,8 @@ func TestApplyUnusualSnapshotResetsFlowAggregationOnSeqRegression(t *testing.T) 
 				Contract: "cu2604C72000",
 			},
 		},
-		flowSeen: map[string]struct{}{
-			oldKey: {},
+		flowSeen: map[string]int64{
+			oldKey: 1000,
 		},
 	}
 
@@ -394,9 +395,9 @@ func TestRenderFlowAggregationPrunesEventsAfterWindowShrink(t *testing.T) {
 			{Key: oldKey, TS: 100000, Contract: "cu2604C72000"},
 			{Key: newKey, TS: 300000, Contract: "cu2604C72000"},
 		},
-		flowSeen: map[string]struct{}{
-			oldKey: {},
-			newKey: {},
+		flowSeen: map[string]int64{
+			oldKey: 100000,
+			newKey: 300000,
 		},
 	}
 
@@ -430,38 +431,55 @@ func TestRenderFlowAggregationSkipsUnclassifiableTurnoverInTotals(t *testing.T) 
 		liveFlow:               tview.NewTable(),
 		flowWindowSeconds:      defaultFlowWindowSeconds,
 		flowMinAnalysisSeconds: defaultFlowMinAnalysisSeconds,
-		marketRawRows: []map[string]any{
-			{"ctp_contract": "cu2604", "last": 100.0},
-		},
 		flowEvents: []flowEvent{
 			{
-				Key:         "valid",
-				TS:          100000,
-				Contract:    "cu2604C72000",
-				Symbol:      "CU",
-				Underlying:  "cu2604",
-				CP:          "c",
-				Strike:      90.0,
-				HasStrike:   true,
-				Turnover:    100.0,
-				HasTurnover: true,
+				Key:             "valid",
+				TS:              100000,
+				Contract:        "cu2604C72000",
+				Symbol:          "CU",
+				Underlying:      "cu2604",
+				CP:              "c",
+				Strike:          90.0,
+				HasStrike:       true,
+				DirectionScore:  0.8,
+				VolScore:        0.7,
+				GammaScore:      0.6,
+				ThetaScore:      -0.8,
+				PositionScore:   0.5,
+				Delta:           0.5,
+				Vega:            0.2,
+				Gamma:           0.1,
+				Theta:           -0.2,
+				WeightDirection: 10,
+				WeightVol:       10,
+				WeightGamma:     10,
+				WeightTheta:     10,
+				WeightPosition:  10,
+				QDirection:      1,
+				QVol:            1,
+				QGamma:          1,
+				QTheta:          1,
+				QPosition:       1,
+				GDirection:      1,
+				GVol:            1,
+				GGamma:          1,
+				GTheta:          1,
+				GPosition:       1,
 			},
 			{
-				Key:         "invalid-cp",
-				TS:          132000,
-				Contract:    "cu2604X72000",
-				Symbol:      "CU",
-				Underlying:  "cu2604",
-				CP:          "x",
-				Strike:      90.0,
-				HasStrike:   true,
-				Turnover:    200.0,
-				HasTurnover: true,
+				Key:        "invalid-cp",
+				TS:         132000,
+				Contract:   "cu2604X72000",
+				Symbol:     "CU",
+				Underlying: "cu2604",
+				CP:         "x",
+				Strike:     90.0,
+				HasStrike:  true,
 			},
 		},
-		flowSeen: map[string]struct{}{
-			"valid":      {},
-			"invalid-cp": {},
+		flowSeen: map[string]int64{
+			"valid":      100000,
+			"invalid-cp": 132000,
 		},
 	}
 
@@ -470,24 +488,17 @@ func TestRenderFlowAggregationSkipsUnclassifiableTurnoverInTotals(t *testing.T) 
 	if got := ui.liveFlow.GetRowCount(); got < 2 {
 		t.Fatalf("expected at least one aggregated row, got row count %d", got)
 	}
-
-	total, ok := parseFloat(strings.TrimSpace(ui.liveFlow.GetCell(1, 2).Text))
-	if !ok {
-		t.Fatalf("expected total turnover to be numeric, got %q", ui.liveFlow.GetCell(1, 2).Text)
+	if got := strings.TrimSpace(ui.liveFlow.GetCell(1, 0).Text); got != "cu2604" {
+		t.Fatalf("expected underlying cu2604, got %q", got)
 	}
-	itmTurnover, ok := parseFloat(strings.TrimSpace(ui.liveFlow.GetCell(1, 4).Text))
-	if !ok {
-		t.Fatalf("expected ITM turnover to be numeric, got %q", ui.liveFlow.GetCell(1, 4).Text)
+	if got := strings.TrimSpace(ui.liveFlow.GetCell(1, 1).Text); got != "BULL" {
+		t.Fatalf("expected direction BULL, got %q", got)
 	}
-	otmTurnover, ok := parseFloat(strings.TrimSpace(ui.liveFlow.GetCell(1, 7).Text))
-	if !ok {
-		t.Fatalf("expected OTM turnover to be numeric, got %q", ui.liveFlow.GetCell(1, 7).Text)
+	if got := strings.TrimSpace(ui.liveFlow.GetCell(1, 2).Text); got != "LONG_VOL" {
+		t.Fatalf("expected vol LONG_VOL, got %q", got)
 	}
-	if total != 100.0 {
-		t.Fatalf("expected only classifiable turnover to be counted in total, got %v", total)
-	}
-	if total != itmTurnover+otmTurnover {
-		t.Fatalf("expected total turnover to equal ITM+OTM turnover, got total=%v itm=%v otm=%v", total, itmTurnover, otmTurnover)
+	if got := strings.TrimSpace(ui.liveFlow.GetCell(1, 8).Text); got != "cu2604C72000" {
+		t.Fatalf("expected top contract to contain valid contract, got %q", got)
 	}
 }
 
@@ -525,9 +536,9 @@ func TestRenderFlowAggregationDoesNotCreateRowsForOnlyUnclassifiableEvents(t *te
 				HasTurnover: true,
 			},
 		},
-		flowSeen: map[string]struct{}{
-			"invalid-cp-1": {},
-			"invalid-cp-2": {},
+		flowSeen: map[string]int64{
+			"invalid-cp-1": 100000,
+			"invalid-cp-2": 132000,
 		},
 	}
 
@@ -743,21 +754,13 @@ func TestParseUnusualThresholdInputs(t *testing.T) {
 
 func TestApplyFlowSettingsFallsBackAndAppliesImmediately(t *testing.T) {
 	ui := &UI{
-		flowSortBy:             "symbol",
-		flowSortAsc:            true,
 		flowWindowSeconds:      300,
 		flowMinAnalysisSeconds: 45,
 	}
 
-	valid := ui.applyFlowSettings("total_turnover_sum", "desc", "bad", "999")
+	valid := ui.applyFlowSettings("bad", "999")
 	if valid {
 		t.Fatalf("expected applyFlowSettings to report invalid input")
-	}
-	if ui.flowSortBy != "total_turnover_sum" {
-		t.Fatalf("expected sort field update, got %q", ui.flowSortBy)
-	}
-	if ui.flowSortAsc {
-		t.Fatalf("expected descending sort order")
 	}
 	if ui.flowWindowSeconds != defaultFlowWindowSeconds {
 		t.Fatalf("expected fallback window %d, got %d", defaultFlowWindowSeconds, ui.flowWindowSeconds)
@@ -766,21 +769,451 @@ func TestApplyFlowSettingsFallsBackAndAppliesImmediately(t *testing.T) {
 		t.Fatalf("expected fallback min window %d, got %d", defaultFlowMinAnalysisSeconds, ui.flowMinAnalysisSeconds)
 	}
 
-	valid = ui.applyFlowSettings("itm", "asc", "60", "70")
+	valid = ui.applyFlowSettings("60", "70")
 	if valid {
 		t.Fatalf("expected applyFlowSettings to reject min_analysis > window_size")
-	}
-	if ui.flowSortBy != "itm" {
-		t.Fatalf("expected updated sort field for second apply, got %q", ui.flowSortBy)
-	}
-	if !ui.flowSortAsc {
-		t.Fatalf("expected ascending sort order on second apply")
 	}
 	if ui.flowWindowSeconds != 60 {
 		t.Fatalf("expected window_size to keep valid value 60, got %d", ui.flowWindowSeconds)
 	}
 	if ui.flowMinAnalysisSeconds != defaultFlowMinAnalysisSeconds {
 		t.Fatalf("expected min window fallback %d when min>window, got %d", defaultFlowMinAnalysisSeconds, ui.flowMinAnalysisSeconds)
+	}
+}
+
+func TestRuntimeDebugUIHiddenByDefault(t *testing.T) {
+	t.Setenv(internalDebugUIEnv, "")
+	ui := &UI{}
+	_ = ui.buildLiveScreen()
+	if ui.liveLog != nil {
+		t.Fatalf("expected runtime log panel to stay hidden by default")
+	}
+}
+
+func TestFlowEventIDNormalizationStable(t *testing.T) {
+	rowA := map[string]any{
+		"ts":           float64(1738789200000),
+		"tag":          "TURNOVER",
+		"price":        1.12345674,
+		"turnover_chg": 100.12345674,
+		"oi_chg":       -2.12345674,
+	}
+	rowB := map[string]any{
+		"ts":           float64(1738789200000),
+		"tag":          "turnover",
+		"price":        "1.12345675",
+		"turnover_chg": "100.12345675",
+		"oi_chg":       "-2.12345675",
+	}
+	idA := flowEventID(rowA, "CU2604C72000", "c", 72000.12345674, true)
+	idB := flowEventID(rowB, "cu2604c72000", "C", 72000.12345675, true)
+	if idA != idB {
+		t.Fatalf("expected normalized event ids to match, got %q vs %q", idA, idB)
+	}
+}
+
+func TestApplyPatternOverlayGreedyPairSelectionDeterministic(t *testing.T) {
+	events := []flowEvent{
+		{
+			Key:            "a",
+			Contract:       "A",
+			Underlying:     "cu2604",
+			CP:             "c",
+			TS:             1000,
+			Expiry:         "2026-03-20",
+			HasDelta:       true,
+			Delta:          0.50,
+			HasTTE:         true,
+			TTE:            30,
+			WTrigger:       100,
+			QBookOK:        true,
+			GreeksReady:    true,
+			DirectionScore: 0.8,
+			VolScore:       0.5,
+			GammaScore:     0.0,
+			ThetaScore:     0.0,
+			Vega:           1,
+			Gamma:          0,
+			Theta:          0,
+			WeightVol:      1,
+			WeightGamma:    1,
+			WeightTheta:    1,
+		},
+		{
+			Key:            "b",
+			Contract:       "B",
+			Underlying:     "cu2604",
+			CP:             "p",
+			TS:             1000,
+			Expiry:         "2026-03-20",
+			HasDelta:       true,
+			Delta:          -0.50,
+			HasTTE:         true,
+			TTE:            30,
+			WTrigger:       100,
+			QBookOK:        true,
+			GreeksReady:    true,
+			DirectionScore: 0.8,
+			VolScore:       0.1,
+			GammaScore:     0.0,
+			ThetaScore:     0.0,
+			Vega:           10,
+			Gamma:          0,
+			Theta:          0,
+			WeightVol:      1,
+			WeightGamma:    1,
+			WeightTheta:    1,
+		},
+		{
+			Key:            "c",
+			Contract:       "C",
+			Underlying:     "cu2604",
+			CP:             "p",
+			TS:             1000,
+			Expiry:         "2026-03-20",
+			HasDelta:       true,
+			Delta:          -0.50,
+			HasTTE:         true,
+			TTE:            30,
+			WTrigger:       100,
+			QBookOK:        true,
+			GreeksReady:    true,
+			DirectionScore: 0.8,
+			VolScore:       0.1,
+			GammaScore:     0.0,
+			ThetaScore:     0.0,
+			Vega:           20,
+			Gamma:          0,
+			Theta:          0,
+			WeightVol:      1,
+			WeightGamma:    1,
+			WeightTheta:    1,
+		},
+	}
+	agg := flowUnderlyingAgg{}
+	for _, event := range events {
+		agg.UnderVol += event.WeightVol * event.VolScore * event.Vega
+	}
+	hint := applyPatternOverlay(events, &agg)
+	if hint != "STRADDLE×1" {
+		t.Fatalf("expected one deterministic straddle pair, got %q", hint)
+	}
+	if math.Abs(agg.UnderVol-13.0) > 1e-9 {
+		t.Fatalf("expected greedy tie-break to prefer pair a-b, got underVol=%v", agg.UnderVol)
+	}
+}
+
+func TestApplyPatternOverlayKeepsDistinctPairsInSameTimeBucket(t *testing.T) {
+	events := []flowEvent{
+		{
+			Key:            "a",
+			Contract:       "A",
+			Underlying:     "cu2604",
+			CP:             "c",
+			TS:             1000,
+			Expiry:         "2026-03-20",
+			HasDelta:       true,
+			Delta:          0.50,
+			HasTTE:         true,
+			TTE:            30,
+			WTrigger:       100,
+			QBookOK:        true,
+			GreeksReady:    true,
+			DirectionScore: 0.8,
+			VolScore:       0.1,
+			GammaScore:     0.0,
+			ThetaScore:     0.0,
+			Vega:           1,
+			Gamma:          0,
+			Theta:          0,
+			WeightVol:      1,
+			WeightGamma:    1,
+			WeightTheta:    1,
+		},
+		{
+			Key:            "b",
+			Contract:       "B",
+			Underlying:     "cu2604",
+			CP:             "p",
+			TS:             1000,
+			Expiry:         "2026-03-20",
+			HasDelta:       true,
+			Delta:          -0.50,
+			HasTTE:         true,
+			TTE:            30,
+			WTrigger:       100,
+			QBookOK:        true,
+			GreeksReady:    true,
+			DirectionScore: 0.8,
+			VolScore:       0.1,
+			GammaScore:     0.0,
+			ThetaScore:     0.0,
+			Vega:           1,
+			Gamma:          0,
+			Theta:          0,
+			WeightVol:      1,
+			WeightGamma:    1,
+			WeightTheta:    1,
+		},
+		{
+			Key:            "c",
+			Contract:       "C",
+			Underlying:     "cu2604",
+			CP:             "c",
+			TS:             1000,
+			Expiry:         "2026-03-20",
+			HasDelta:       true,
+			Delta:          0.50,
+			HasTTE:         true,
+			TTE:            30,
+			WTrigger:       100,
+			QBookOK:        true,
+			GreeksReady:    true,
+			DirectionScore: 0.8,
+			VolScore:       0.1,
+			GammaScore:     0.0,
+			ThetaScore:     0.0,
+			Vega:           1,
+			Gamma:          0,
+			Theta:          0,
+			WeightVol:      1,
+			WeightGamma:    1,
+			WeightTheta:    1,
+		},
+		{
+			Key:            "d",
+			Contract:       "D",
+			Underlying:     "cu2604",
+			CP:             "p",
+			TS:             1000,
+			Expiry:         "2026-03-20",
+			HasDelta:       true,
+			Delta:          -0.50,
+			HasTTE:         true,
+			TTE:            30,
+			WTrigger:       100,
+			QBookOK:        true,
+			GreeksReady:    true,
+			DirectionScore: 0.8,
+			VolScore:       0.1,
+			GammaScore:     0.0,
+			ThetaScore:     0.0,
+			Vega:           1,
+			Gamma:          0,
+			Theta:          0,
+			WeightVol:      1,
+			WeightGamma:    1,
+			WeightTheta:    1,
+		},
+	}
+	agg := flowUnderlyingAgg{}
+	for _, event := range events {
+		agg.UnderVol += event.WeightVol * event.VolScore * event.Vega
+	}
+	hint := applyPatternOverlay(events, &agg)
+	if hint != "STRADDLE×2" {
+		t.Fatalf("expected two independent straddle pairs in same time bucket, got %q", hint)
+	}
+	if math.Abs(agg.UnderVol-4.0) > 1e-9 {
+		t.Fatalf("expected two pair netting adjustments, got underVol=%v", agg.UnderVol)
+	}
+}
+
+func TestApplyPatternOverlaySkipsMalformedOptionSide(t *testing.T) {
+	events := []flowEvent{
+		{
+			Key:            "a",
+			Contract:       "A",
+			Underlying:     "cu2604",
+			CP:             "call",
+			TS:             1000,
+			Expiry:         "2026-03-20",
+			HasDelta:       true,
+			Delta:          0.50,
+			HasTTE:         true,
+			TTE:            30,
+			WTrigger:       100,
+			QBookOK:        true,
+			GreeksReady:    true,
+			DirectionScore: 0.8,
+			VolScore:       0.1,
+			GammaScore:     0.0,
+			ThetaScore:     0.0,
+			Vega:           1,
+			Gamma:          0,
+			Theta:          0,
+			WeightVol:      1,
+			WeightGamma:    1,
+			WeightTheta:    1,
+		},
+		{
+			Key:            "b",
+			Contract:       "B",
+			Underlying:     "cu2604",
+			CP:             "p",
+			TS:             1000,
+			Expiry:         "2026-03-20",
+			HasDelta:       true,
+			Delta:          -0.50,
+			HasTTE:         true,
+			TTE:            30,
+			WTrigger:       100,
+			QBookOK:        true,
+			GreeksReady:    true,
+			DirectionScore: 0.8,
+			VolScore:       0.1,
+			GammaScore:     0.0,
+			ThetaScore:     0.0,
+			Vega:           1,
+			Gamma:          0,
+			Theta:          0,
+			WeightVol:      1,
+			WeightGamma:    1,
+			WeightTheta:    1,
+		},
+	}
+	agg := flowUnderlyingAgg{}
+	for _, event := range events {
+		agg.UnderVol += event.WeightVol * event.VolScore * event.Vega
+	}
+
+	hint := applyPatternOverlay(events, &agg)
+	if hint != "" {
+		t.Fatalf("expected no pattern hint for malformed CP, got %q", hint)
+	}
+	if math.Abs(agg.UnderVol-0.2) > 1e-9 {
+		t.Fatalf("expected no overlay netting with malformed CP, got underVol=%v", agg.UnderVol)
+	}
+}
+
+func TestIngestFlowEventsUsesStablePrevFrameForSameContractBatch(t *testing.T) {
+	const contract = "cu2604c72000"
+	ui := &UI{
+		flowSeen:           map[string]int64{},
+		flowPrevByContract: map[string]optionFrame{},
+		flowCurrByContract: map[string]optionFrame{
+			contract: {
+				TS:              900,
+				Last:            100.0,
+				HasLast:         true,
+				Turnover:        1000000.0,
+				HasTurnover:     true,
+				OpenInterest:    1000.0,
+				HasOpenInterest: true,
+			},
+		},
+	}
+
+	rows := []map[string]any{
+		{
+			"ts":             float64(1000),
+			"ctp_contract":   "cu2604C72000",
+			"cp":             "c",
+			"symbol":         "CU",
+			"underlying":     "cu2604",
+			"price":          100.0,
+			"turnover":       1100000.0,
+			"turnover_chg":   100000.0,
+			"turnover_ratio": 0.1,
+			"oi":             1100.0,
+			"tag":            "TURNOVER",
+		},
+		{
+			"ts":           float64(1000),
+			"ctp_contract": "cu2604C72000",
+			"cp":           "c",
+			"symbol":       "CU",
+			"underlying":   "cu2604",
+			"price":        100.0,
+			"turnover":     1100000.0,
+			"oi":           1100.0,
+			"oi_chg":       100.0,
+			"oi_ratio":     0.1,
+			"tag":          "OI",
+		},
+	}
+
+	ui.ingestFlowEvents(rows)
+
+	if len(ui.flowEvents) != 2 {
+		t.Fatalf("expected two flow events from same-contract batch, got %d", len(ui.flowEvents))
+	}
+
+	var oiEvent *flowEvent
+	for i := range ui.flowEvents {
+		if ui.flowEvents[i].Tag == "OI" {
+			oiEvent = &ui.flowEvents[i]
+			break
+		}
+	}
+	if oiEvent == nil {
+		t.Fatalf("expected OI flow event in batch")
+	}
+	if math.Abs(oiEvent.QData-1.0) > 1e-9 {
+		t.Fatalf("expected OI event qData to remain 1.0 when compared to prior tick, got %v", oiEvent.QData)
+	}
+	if oiEvent.PositionScore <= 0 {
+		t.Fatalf("expected positive position score from oi_chg against prior tick, got %v", oiEvent.PositionScore)
+	}
+
+	prevFrame, ok := ui.flowPrevByContract[contract]
+	if !ok {
+		t.Fatalf("expected preserved prior frame for contract %s", contract)
+	}
+	if !prevFrame.HasOpenInterest || math.Abs(prevFrame.OpenInterest-1000.0) > 1e-9 {
+		t.Fatalf("expected prior OI frame to stay at 1000, got %+v", prevFrame)
+	}
+}
+
+func TestIngestFlowEventsDuplicateHistoryDoesNotRollbackCurrFrame(t *testing.T) {
+	const contract = "cu2604c72000"
+	oldRow := map[string]any{
+		"ts":             float64(1000),
+		"ctp_contract":   "cu2604C72000",
+		"cp":             "c",
+		"symbol":         "CU",
+		"underlying":     "cu2604",
+		"price":          100.0,
+		"turnover":       1000000.0,
+		"turnover_chg":   100000.0,
+		"turnover_ratio": 0.1,
+		"oi":             1000.0,
+		"tag":            "TURNOVER",
+	}
+	oldEvent, ok := toFlowEvent(oldRow)
+	if !ok {
+		t.Fatalf("expected old row to convert to flow event")
+	}
+	ui := &UI{
+		flowSeen: map[string]int64{
+			oldEvent.Key: oldEvent.TS,
+		},
+		flowPrevByContract: map[string]optionFrame{},
+		flowCurrByContract: map[string]optionFrame{
+			contract: {
+				TS:              2000,
+				Last:            120.0,
+				HasLast:         true,
+				Turnover:        1300000.0,
+				HasTurnover:     true,
+				OpenInterest:    1300.0,
+				HasOpenInterest: true,
+			},
+		},
+		flowEvents: []flowEvent{oldEvent},
+	}
+
+	ui.ingestFlowEvents([]map[string]any{oldRow})
+
+	currFrame, exists := ui.flowCurrByContract[contract]
+	if !exists {
+		t.Fatalf("expected current frame for contract %s", contract)
+	}
+	if currFrame.TS != 2000 {
+		t.Fatalf("expected duplicate history row not to roll back curr frame ts, got %d", currFrame.TS)
+	}
+	if math.Abs(currFrame.Turnover-1300000.0) > 1e-9 {
+		t.Fatalf("expected duplicate history row not to roll back turnover, got %v", currFrame.Turnover)
 	}
 }
 
@@ -851,6 +1284,116 @@ func TestFilterMarketRowsContractStrictMatchCSV(t *testing.T) {
 		if contract != "T2605" && contract != "RB2605" {
 			t.Fatalf("unexpected contract in result: %s", contract)
 		}
+	}
+}
+
+func TestFilterMainContractsBySymbolSelectsMaxOI(t *testing.T) {
+	rows := []map[string]any{
+		{"ctp_contract": "sc2603", "symbol": "SC", "open_interest": 1000.0},
+		{"ctp_contract": "sc2604", "symbol": "SC", "open_interest": 2200.0},
+		{"ctp_contract": "sc2605", "symbol": "SC", "open_interest": 1800.0},
+		{"ctp_contract": "lc2605", "symbol": "LC", "open_interest": 3000.0},
+		{"ctp_contract": "lc2606", "symbol": "LC", "open_interest": 2600.0},
+	}
+
+	filtered := filterMainContractsBySymbol(rows)
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2 rows (one per symbol), got %d", len(filtered))
+	}
+	contracts := map[string]bool{}
+	for _, row := range filtered {
+		contracts[strings.ToLower(asString(row["ctp_contract"]))] = true
+	}
+	if !contracts["sc2604"] || !contracts["lc2605"] {
+		t.Fatalf("expected sc2604 and lc2605, got %v", contracts)
+	}
+}
+
+func TestFilterMainContractsBySymbolUsesContractTieBreak(t *testing.T) {
+	rows := []map[string]any{
+		{"ctp_contract": "sc2605", "symbol": "SC", "open_interest": 1200.0},
+		{"ctp_contract": "sc2604", "symbol": "SC", "open_interest": 1200.0},
+	}
+	filtered := filterMainContractsBySymbol(rows)
+	if len(filtered) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(filtered))
+	}
+	if got := strings.ToLower(asString(filtered[0]["ctp_contract"])); got != "sc2604" {
+		t.Fatalf("expected tie-break contract sc2604, got %s", got)
+	}
+}
+
+func TestFilterMainContractsBySymbolTreatsNonFiniteOIAsMissing(t *testing.T) {
+	rows := []map[string]any{
+		{"ctp_contract": "sc2603", "symbol": "SC", "open_interest": math.NaN()},
+		{"ctp_contract": "sc2604", "symbol": "SC", "open_interest": 1200.0},
+		{"ctp_contract": "lc2605", "symbol": "LC", "open_interest": math.Inf(1)},
+		{"ctp_contract": "lc2604", "symbol": "LC", "open_interest": 900.0},
+	}
+	filtered := filterMainContractsBySymbol(rows)
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(filtered))
+	}
+	contracts := map[string]bool{}
+	for _, row := range filtered {
+		contracts[strings.ToLower(asString(row["ctp_contract"]))] = true
+	}
+	if !contracts["sc2604"] || !contracts["lc2604"] {
+		t.Fatalf("expected finite OI contracts sc2604 and lc2604, got %v", contracts)
+	}
+}
+
+func TestRenderMarketRowsAppliesMainOnlyAfterOtherFilters(t *testing.T) {
+	ui := &UI{
+		liveMarket:     tview.NewTable(),
+		marketSortBy:   "contract",
+		marketSortAsc:  true,
+		filterSymbol:   "SC,LC",
+		filterMainOnly: true,
+		marketRawRows: []map[string]any{
+			{"ctp_contract": "sc2603", "symbol": "SC", "open_interest": 1000.0, "last": 10.0},
+			{"ctp_contract": "sc2604", "symbol": "SC", "open_interest": 2200.0, "last": 11.0},
+			{"ctp_contract": "lc2605", "symbol": "LC", "open_interest": 3000.0, "last": 12.0},
+			{"ctp_contract": "cu2604", "symbol": "CU", "open_interest": 9999.0, "last": 13.0},
+		},
+	}
+
+	ui.renderMarketRows()
+	if len(ui.marketRows) != 2 {
+		t.Fatalf("expected 2 rendered rows after symbol+main filter, got %d", len(ui.marketRows))
+	}
+	contracts := []string{
+		strings.ToLower(ui.marketRows[0].Symbol),
+		strings.ToLower(ui.marketRows[1].Symbol),
+	}
+	joined := strings.Join(contracts, ",")
+	if !strings.Contains(joined, "sc2604") || !strings.Contains(joined, "lc2605") {
+		t.Fatalf("expected rendered rows contain sc2604 and lc2605, got %v", contracts)
+	}
+}
+
+func TestResetMarketFiltersResetsMainOnly(t *testing.T) {
+	ui := &UI{
+		filterExchange: "SHFE",
+		filterClass:    "1",
+		filterSymbol:   "SC",
+		filterContract: "sc2604",
+		filterMainOnly: true,
+		marketSortBy:   "last",
+		marketSortAsc:  true,
+	}
+
+	ui.resetMarketFilters()
+
+	if ui.filterExchange != "" || ui.filterClass != "" || ui.filterSymbol != "" || ui.filterContract != "" {
+		t.Fatalf("expected all text filters reset, got exchange=%q class=%q symbol=%q contract=%q",
+			ui.filterExchange, ui.filterClass, ui.filterSymbol, ui.filterContract)
+	}
+	if ui.filterMainOnly {
+		t.Fatalf("expected filterMainOnly reset to false")
+	}
+	if ui.marketSortBy != "vol" || ui.marketSortAsc {
+		t.Fatalf("expected market sort reset to vol/desc, got sortBy=%q asc=%v", ui.marketSortBy, ui.marketSortAsc)
 	}
 }
 
@@ -1009,6 +1552,7 @@ func TestToFlowEventIgnoresCumulativeTurnoverForOITag(t *testing.T) {
 		"ctp_contract": "cu2604C72000",
 		"cp":           "c",
 		"strike":       72000.0,
+		"price":        100.0,
 		"turnover":     980000.0,
 		"oi_chg":       -1200.0,
 		"tag":          "OI",

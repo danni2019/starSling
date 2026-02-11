@@ -72,7 +72,17 @@ func TestRouterMarketSnapshotRoundTrip(t *testing.T) {
 		SchemaVersion: 1,
 		TS:            time.Now().UnixMilli(),
 		Rows: []map[string]any{
-			{"ctp_contract": "cu2604C72000", "underlying": "cu2604", "symbol": "cu", "strike": 72000.0, "iv": 0.22},
+			{
+				"ctp_contract": "cu2604C72000",
+				"underlying":   "cu2604",
+				"symbol":       "cu",
+				"strike":       72000.0,
+				"iv":           0.22,
+				"delta":        0.41,
+				"gamma":        0.01,
+				"theta":        -0.02,
+				"vega":         0.15,
+			},
 			{"ctp_contract": "ag2604C30000", "underlying": "ag2604", "symbol": "ag", "strike": 30000.0, "iv": 0.30},
 		},
 	}
@@ -117,6 +127,22 @@ func TestRouterMarketSnapshotRoundTrip(t *testing.T) {
 	}
 	if len(withSections.Unusual.Rows) != 1 {
 		t.Fatalf("expected 1 unusual row, got %d", len(withSections.Unusual.Rows))
+	}
+	unusualRow := withSections.Unusual.Rows[0]
+	for key, want := range map[string]float64{
+		"iv":    0.22,
+		"delta": 0.41,
+		"gamma": 0.01,
+		"theta": -0.02,
+		"vega":  0.15,
+	} {
+		got, ok := unusualRow[key].(float64)
+		if !ok {
+			t.Fatalf("expected unusual row field %s to be float64, got %#v", key, unusualRow[key])
+		}
+		if got != want {
+			t.Fatalf("unexpected unusual row %s: got %v want %v", key, got, want)
+		}
 	}
 	if len(withSections.Logs.Items) == 0 {
 		t.Fatalf("expected log items")

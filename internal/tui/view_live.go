@@ -32,12 +32,16 @@ func (ui *UI) buildLiveScreen() tview.Primitive {
 		ui.pushFocusSymbol(symbol)
 	})
 
-	ui.liveLog = tview.NewTextView()
-	ui.liveLog.SetDynamicColors(false)
-	ui.liveLog.SetTextColor(colorLogText)
-	ui.liveLog.SetBackgroundColor(colorBackground)
-	ui.liveLog.SetBorder(true).SetTitle("Runtime log")
-	ui.liveLog.SetBorderColor(colorBorder).SetTitleColor(colorBorder)
+	if runtimeDebugUIEnabled() {
+		ui.liveLog = tview.NewTextView()
+		ui.liveLog.SetDynamicColors(false)
+		ui.liveLog.SetTextColor(colorLogText)
+		ui.liveLog.SetBackgroundColor(colorBackground)
+		ui.liveLog.SetBorder(true).SetTitle("Runtime log (internal)")
+		ui.liveLog.SetBorderColor(colorBorder).SetTitleColor(colorBorder)
+	} else {
+		ui.liveLog = nil
+	}
 
 	ui.liveFlow = tview.NewTable()
 	ui.liveFlow.SetSelectable(false, false)
@@ -75,6 +79,9 @@ func (ui *UI) buildLiveScreen() tview.Primitive {
 		AddItem(ui.liveCurve, 0, 1, false).
 		AddItem(ui.liveOpts, 0, 1, false).
 		AddItem(ui.liveTrades, 0, 1, false)
+	if ui.liveLog != nil {
+		right.AddItem(ui.liveLog, 0, 1, false)
+	}
 
 	root := tview.NewFlex().
 		AddItem(left, 0, 6, true).
@@ -93,7 +100,9 @@ func (ui *UI) buildLiveScreen() tview.Primitive {
 	fillMarketTable(ui.liveMarket, nil)
 	fillTradesTable(ui.liveTrades, nil)
 	fillFlowTable(ui.liveFlow, nil)
-	ui.liveLog.SetText("Waiting for runtime logs...")
+	if ui.liveLog != nil {
+		ui.liveLog.SetText("Waiting for runtime logs...")
+	}
 
 	return root
 }
@@ -105,7 +114,9 @@ func (ui *UI) updateLiveData() {
 	fillMarketTable(ui.liveMarket, ui.data.MarketRows)
 	fillTradesTable(ui.liveTrades, ui.data.Trades)
 	fillFlowTable(ui.liveFlow, nil)
-	fillLog(ui.liveLog, ui.data.Logs)
+	if ui.liveLog != nil {
+		fillLog(ui.liveLog, ui.data.Logs)
+	}
 }
 
 func fillMarketTable(table *tview.Table, rows []MarketRow) {
@@ -146,29 +157,29 @@ func fillMarketTable(table *tview.Table, rows []MarketRow) {
 }
 
 type FlowRow struct {
-	Symbol        string
-	Underlying    string
-	TotalTurnover string
-	ITM           string
-	ITMTurnover   string
-	ITMOIChg      string
-	OTM           string
-	OTMTurnover   string
-	OTMOIChg      string
+	Underlying   string
+	Direction    string
+	Vol          string
+	Gamma        string
+	Theta        string
+	Position     string
+	Confidence   string
+	PatternHint  string
+	TopContracts string
 }
 
 func fillFlowTable(table *tview.Table, rows []FlowRow) {
 	table.Clear()
 	headers := []string{
-		"SYMBOL",
 		"UNDERLYING",
-		"TOTAL_TURNOVER_SUM",
-		"ITM",
-		"ITM_TURNOVER_SUM",
-		"ITM_OI_CHG_SUM",
-		"OTM",
-		"OTM_TURNOVER_SUM",
-		"OTM_OI_CHG_SUM",
+		"DIRECTION",
+		"VOL",
+		"GAMMA",
+		"THETA",
+		"POSITION",
+		"CONFIDENCE",
+		"PATTERN_HINT",
+		"TOP_CONTRACTS",
 	}
 	for col, label := range headers {
 		cell := tview.NewTableCell(padTableCell(label)).
@@ -187,15 +198,15 @@ func fillFlowTable(table *tview.Table, rows []FlowRow) {
 	}
 	for i, row := range rows {
 		values := []string{
-			row.Symbol,
 			row.Underlying,
-			row.TotalTurnover,
-			row.ITM,
-			row.ITMTurnover,
-			row.ITMOIChg,
-			row.OTM,
-			row.OTMTurnover,
-			row.OTMOIChg,
+			row.Direction,
+			row.Vol,
+			row.Gamma,
+			row.Theta,
+			row.Position,
+			row.Confidence,
+			row.PatternHint,
+			row.TopContracts,
 		}
 		for col, value := range values {
 			cell := tview.NewTableCell(padTableCell(value)).

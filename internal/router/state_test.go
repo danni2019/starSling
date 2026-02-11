@@ -121,3 +121,63 @@ func TestStateThresholdUpdate(t *testing.T) {
 		t.Fatalf("unexpected updated oi ratio threshold: %v", uiState.OIRatioThreshold)
 	}
 }
+
+func TestUpdateUnusualEnrichesRowsWithGreeks(t *testing.T) {
+	state := NewState()
+	state.UpdateOptions(OptionsSnapshot{
+		Rows: []map[string]any{
+			{
+				"ctp_contract": "cu2604C72000",
+				"iv":           0.22,
+				"delta":        0.41,
+				"gamma":        0.01,
+				"theta":        -0.02,
+				"vega":         0.15,
+			},
+		},
+	})
+	state.UpdateUnusual(UnusualSnapshot{
+		Rows: []map[string]any{
+			{"ctp_contract": "cu2604C72000", "turnover_chg": 120000.0},
+			{"ctp_contract": "ag2604C30000", "turnover_chg": 50000.0},
+		},
+	})
+
+	view := state.GetViewSnapshot("")
+	if len(view.Unusual.Rows) != 2 {
+		t.Fatalf("expected 2 unusual rows, got %d", len(view.Unusual.Rows))
+	}
+
+	rowsByContract := make(map[string]map[string]any, len(view.Unusual.Rows))
+	for _, row := range view.Unusual.Rows {
+		rowsByContract[toString(row["ctp_contract"])] = row
+	}
+
+	matched, ok := rowsByContract["cu2604C72000"]
+	if !ok {
+		t.Fatalf("expected matched unusual row for cu2604C72000")
+	}
+	for key, want := range map[string]float64{
+		"iv":    0.22,
+		"delta": 0.41,
+		"gamma": 0.01,
+		"theta": -0.02,
+		"vega":  0.15,
+	} {
+		got, ok := matched[key].(float64)
+		if !ok {
+			t.Fatalf("expected %s to be float64 in merged unusual row, got %#v", key, matched[key])
+		}
+		if got != want {
+			t.Fatalf("unexpected %s value: got %v want %v", key, got, want)
+		}
+	}
+
+	unmatched, ok := rowsByContract["ag2604C30000"]
+	if !ok {
+		t.Fatalf("expected unmatched unusual row for ag2604C30000")
+	}
+	if _, exists := unmatched["iv"]; exists {
+		t.Fatalf("expected no greek fields on unmatched unusual row, got %#v", unmatched["iv"])
+	}
+}
