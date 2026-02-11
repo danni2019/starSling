@@ -1803,6 +1803,43 @@ func TestToFlowEventWithContextDowngradesZeroDepthBookQuality(t *testing.T) {
 	}
 }
 
+func TestToFlowEventWithContextDowngradesCrossedBookQuality(t *testing.T) {
+	prevFrame := optionFrame{
+		TS:         1000,
+		Bid1:       99,
+		HasBid1:    true,
+		Ask1:       101,
+		HasAsk1:    true,
+		BidVol1:    10,
+		HasBidVol1: true,
+		AskVol1:    12,
+		HasAskVol1: true,
+	}
+	row := map[string]any{
+		"ts":           float64(2000),
+		"ctp_contract": "cu2604C72000",
+		"cp":           "c",
+		"price":        100.0,
+		"turnover_chg": 120000.0,
+		"bid1":         101.0,
+		"ask1":         100.0,
+		"bid_vol1":     10.0,
+		"ask_vol1":     10.0,
+		"tag":          "TURNOVER",
+	}
+
+	event, _, ok := toFlowEventWithContext(row, prevFrame, nil)
+	if !ok {
+		t.Fatalf("expected row to convert into flow event")
+	}
+	if event.QBookOK {
+		t.Fatalf("expected crossed book to be downgraded from full quality")
+	}
+	if math.Abs(event.QBook-0.5) > 1e-9 {
+		t.Fatalf("expected crossed book quality to be partial (0.5), got %v", event.QBook)
+	}
+}
+
 func TestDisableVoiceReportingDisablesPlaybackAndDrainsQueue(t *testing.T) {
 	ui := &UI{
 		voiceEnabled:   true,

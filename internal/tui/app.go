@@ -2841,8 +2841,8 @@ func toFlowEventWithContext(row map[string]any, prevFrame optionFrame, optionRow
 
 	qBook := 0.0
 	qBookOK := false
-	bookCurrComplete := currFrame.HasBid1 && currFrame.HasAsk1 && currFrame.HasBidVol1 && currFrame.HasAskVol1 && (currFrame.BidVol1+currFrame.AskVol1) > 0
-	bookPrevComplete := prevFrame.HasBid1 && prevFrame.HasAsk1 && prevFrame.HasBidVol1 && prevFrame.HasAskVol1 && (prevFrame.BidVol1+prevFrame.AskVol1) > 0
+	bookCurrComplete := hasSpreadCurr && currFrame.HasBidVol1 && currFrame.HasAskVol1 && (currFrame.BidVol1+currFrame.AskVol1) > 0
+	bookPrevComplete := hasSpreadPrev && prevFrame.HasBidVol1 && prevFrame.HasAskVol1 && (prevFrame.BidVol1+prevFrame.AskVol1) > 0
 	availBook := false
 	if bookCurrComplete && bookPrevComplete {
 		qBook = 1
