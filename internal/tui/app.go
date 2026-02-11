@@ -2747,7 +2747,11 @@ func toFlowEventWithContext(row map[string]any, prevFrame optionFrame, optionRow
 	if currFrame.HasLast && currFrame.Last > 0 {
 		priceForOI = currFrame.Last
 	}
-	if priceForOI <= 0 && prevFrame.HasLast && prevFrame.Last > 0 {
+	usePrevPriceFallback := true
+	if prevFrame.TS > 0 && currFrame.TS > 0 && prevFrame.TS > currFrame.TS {
+		usePrevPriceFallback = false
+	}
+	if priceForOI <= 0 && usePrevPriceFallback && prevFrame.HasLast && prevFrame.Last > 0 {
 		priceForOI = prevFrame.Last
 	}
 	if priceForOI <= 0 && hasMidCurr && midCurr > 0 {
@@ -2756,10 +2760,10 @@ func toFlowEventWithContext(row map[string]any, prevFrame optionFrame, optionRow
 	if priceForOI <= 0 && hasBookVWAPCurr && bookVWAPCurr > 0 {
 		priceForOI = bookVWAPCurr
 	}
-	if priceForOI <= 0 && hasMidPrev && midPrev > 0 {
+	if priceForOI <= 0 && usePrevPriceFallback && hasMidPrev && midPrev > 0 {
 		priceForOI = midPrev
 	}
-	if priceForOI <= 0 && hasBookVWAPPrev && bookVWAPPrev > 0 {
+	if priceForOI <= 0 && usePrevPriceFallback && hasBookVWAPPrev && bookVWAPPrev > 0 {
 		priceForOI = bookVWAPPrev
 	}
 	if priceForOI <= 0 {

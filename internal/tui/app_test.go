@@ -1651,6 +1651,30 @@ func TestToFlowEventKeepsOIEventWhenPriceIsZero(t *testing.T) {
 	}
 }
 
+func TestToFlowEventWithContextOIFallbackSkipsNewerPrevPrice(t *testing.T) {
+	prevFrame := optionFrame{
+		TS:      2000,
+		Last:    100.0,
+		HasLast: true,
+	}
+	row := map[string]any{
+		"ts":           float64(1000),
+		"ctp_contract": "cu2604C72000",
+		"cp":           "c",
+		"price":        0.0,
+		"oi_chg":       -1200.0,
+		"tag":          "OI",
+	}
+
+	event, _, ok := toFlowEventWithContext(row, prevFrame, nil)
+	if !ok {
+		t.Fatalf("expected replayed OI row to convert into flow event")
+	}
+	if math.Abs(event.WOI-1200.0) > 1e-9 {
+		t.Fatalf("expected replayed row not to borrow newer price, got wOI=%v", event.WOI)
+	}
+}
+
 func TestSpreadRejectsLockedOrCrossedQuotes(t *testing.T) {
 	if _, ok := spread(100, true, 100, true); ok {
 		t.Fatalf("expected locked quotes to be unavailable")
