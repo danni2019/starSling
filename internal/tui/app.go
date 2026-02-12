@@ -123,56 +123,58 @@ type UI struct {
 	unusualProc   *live.Process
 	unusualCancel context.CancelFunc
 
-	lastMarketSeq           int64
-	lastMarketStale         bool
-	marketSortBy            string
-	marketSortAsc           bool
-	marketRawRows           []map[string]any
-	marketRows              []MarketRow
-	filterExchange          string
-	filterClass             string
-	filterSymbol            string
-	filterContract          string
-	filterMainOnly          bool
-	focusSymbol             string
-	focusSyncPending        bool
-	lastOptionsSeq          int64
-	lastOptionsStale        bool
-	lastOptionsKey          string
-	optionsRawRows          []map[string]any
-	optionsDeltaAbsMin      float64
-	optionsDeltaAbsMax      float64
-	optionsDeltaEnabled     bool
-	voiceEnabled            bool
-	voiceContracts          map[string]struct{}
-	voiceLastSpoken         map[string]time.Time
-	voiceLastPrice          map[string]float64
-	voiceUnavailable        bool
-	voicePlaybackEnabled    atomic.Bool
-	voiceMutedAt            time.Time
-	lastCurveContracts      []string
-	lastCurveSeq            int64
-	lastCurveStale          bool
-	lastUnusualSeq          int64
-	lastUnusualStale        bool
-	lastLogsSeq             int64
-	unusualChgThreshold     float64
-	unusualRatioThreshold   float64
-	unusualOIRatioThreshold float64
-	liveLogLines            []string
-	flowWindowSeconds       int
-	flowMinAnalysisSeconds  int
-	flowSortBy              string
-	flowSortAsc             bool
-	flowEvents              []flowEvent
-	flowSeen                map[string]int64
-	flowPrevByContract      map[string]optionFrame
-	flowCurrByContract      map[string]optionFrame
-	flowHasResult           bool
-	voiceQueue              chan string
-	logoTitleWidth          int
-	logoFrame               int
-	lastWidth               int
+	lastMarketSeq             int64
+	lastMarketStale           bool
+	marketSortBy              string
+	marketSortAsc             bool
+	marketRawRows             []map[string]any
+	marketRows                []MarketRow
+	filterExchange            string
+	filterClass               string
+	filterSymbol              string
+	filterContract            string
+	filterMainOnly            bool
+	focusSymbol               string
+	focusSyncPending          bool
+	lastOptionsSeq            int64
+	lastOptionsStale          bool
+	lastOptionsKey            string
+	optionsRawRows            []map[string]any
+	optionsDeltaAbsMin        float64
+	optionsDeltaAbsMax        float64
+	optionsDeltaEnabled       bool
+	voiceEnabled              bool
+	voiceContracts            map[string]struct{}
+	voiceLastSpoken           map[string]time.Time
+	voiceLastPrice            map[string]float64
+	voiceUnavailable          bool
+	voicePlaybackEnabled      atomic.Bool
+	voiceMutedAt              time.Time
+	lastCurveContracts        []string
+	lastCurveSeq              int64
+	lastCurveStale            bool
+	lastUnusualSeq            int64
+	lastUnusualStale          bool
+	lastLogsSeq               int64
+	unusualChgThreshold       float64
+	unusualRatioThreshold     float64
+	unusualOIRatioThreshold   float64
+	liveLogLines              []string
+	flowWindowSeconds         int
+	flowMinAnalysisSeconds    int
+	flowOnlySelectedContracts bool
+	flowOnlyFocusedSymbol     bool
+	flowSortBy                string
+	flowSortAsc               bool
+	flowEvents                []flowEvent
+	flowSeen                  map[string]int64
+	flowPrevByContract        map[string]optionFrame
+	flowCurrByContract        map[string]optionFrame
+	flowHasResult             bool
+	voiceQueue                chan string
+	logoTitleWidth            int
+	logoFrame                 int
+	lastWidth                 int
 }
 
 func newUI(routerAddr string, logger *slog.Logger) *UI {
@@ -413,11 +415,15 @@ func (ui *UI) openMarketFilter() {
 		order := strings.TrimSpace(strings.ToLower(selectedOrder))
 		ui.marketSortAsc = order == "asc"
 		ui.renderMarketRows()
+		ui.ensureFocusSymbol()
+		ui.renderFlowAggregation()
 		ui.closeDrilldown()
 	})
 	form.AddButton("Reset", func() {
 		ui.resetMarketFilters()
 		ui.renderMarketRows()
+		ui.ensureFocusSymbol()
+		ui.renderFlowAggregation()
 		ui.closeDrilldown()
 	})
 	form.AddButton("Cancel", func() {
@@ -503,13 +509,21 @@ func (ui *UI) openFlowSettings() {
 	minWindowInput := tview.NewInputField().
 		SetLabel("min_analysis(sec) [15,60]: ").
 		SetText(strconv.Itoa(ui.flowMinAnalysisSeconds))
+	selectedContractsBox := tview.NewCheckbox().
+		SetLabel("Only focused symbol").
+		SetChecked(ui.flowOnlySelectedContracts)
+	focusedSymbolBox := tview.NewCheckbox().
+		SetLabel("Only selected contracts").
+		SetChecked(ui.flowOnlyFocusedSymbol)
 	hint := tview.NewTextView().
 		SetTextColor(colorMuted).
 		SetText(" ")
 
 	form := tview.NewForm().
 		AddFormItem(windowInput).
-		AddFormItem(minWindowInput)
+		AddFormItem(minWindowInput).
+		AddFormItem(selectedContractsBox).
+		AddFormItem(focusedSymbolBox)
 	form.SetBorder(true).SetTitle("Flow Aggregation Settings")
 	form.SetBorderColor(colorBorder).SetTitleColor(colorBorder)
 	form.SetBackgroundColor(colorBackground)
@@ -519,6 +533,8 @@ func (ui *UI) openFlowSettings() {
 	form.SetButtonTextColor(colorMenuSelected)
 
 	form.AddButton("Apply", func() {
+		ui.flowOnlySelectedContracts = selectedContractsBox.IsChecked()
+		ui.flowOnlyFocusedSymbol = focusedSymbolBox.IsChecked()
 		valid := ui.applyFlowSettings(windowInput.GetText(), minWindowInput.GetText())
 		windowInput.SetText(strconv.Itoa(ui.flowWindowSeconds))
 		minWindowInput.SetText(strconv.Itoa(ui.flowMinAnalysisSeconds))
@@ -536,7 +552,7 @@ func (ui *UI) openFlowSettings() {
 	layout := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(form, 0, 1, true).
 		AddItem(hint, 1, 0, false)
-	ui.pages.AddPage(string(screenDrilldown), centerModal(layout, 66, 12), true, true)
+	ui.pages.AddPage(string(screenDrilldown), centerModal(layout, 66, 15), true, true)
 	ui.app.SetFocus(form)
 }
 
@@ -1445,9 +1461,34 @@ type optionRenderFilter struct {
 }
 
 func inferOptionTypeFromContract(contract string) string {
-	upper := strings.ToUpper(strings.TrimSpace(contract))
+	trimmed := strings.TrimSpace(contract)
+	upper := strings.ToUpper(trimmed)
 	if len(upper) < 3 {
 		return ""
+	}
+	idx := optionContractCPIndex(trimmed)
+	if idx < 0 {
+		return ""
+	}
+	if upper[idx] == 'C' {
+		return "c"
+	}
+	return "p"
+}
+
+func inferOptionUnderlyingFromContract(contract string) string {
+	trimmed := strings.TrimSpace(contract)
+	idx := optionContractCPIndex(trimmed)
+	if idx <= 0 {
+		return ""
+	}
+	return strings.TrimSpace(trimmed[:idx])
+}
+
+func optionContractCPIndex(contract string) int {
+	upper := strings.ToUpper(strings.TrimSpace(contract))
+	if len(upper) < 3 {
+		return -1
 	}
 	for i := len(upper) - 2; i >= 1; i-- {
 		ch := upper[i]
@@ -1459,12 +1500,9 @@ func inferOptionTypeFromContract(contract string) string {
 		if prev < '0' || prev > '9' || next < '0' || next > '9' {
 			continue
 		}
-		if ch == 'C' {
-			return "c"
-		}
-		return "p"
+		return i
 	}
-	return ""
+	return -1
 }
 
 func renderOptionsPanel(rows []map[string]any, focusSymbol string, filter optionRenderFilter) string {
@@ -1717,6 +1755,41 @@ func parsePositiveRange(minValue, maxValue string, defaultMin, defaultMax float6
 	return fallbackMin, fallbackMax, false
 }
 
+func normalizeToken(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func matchesFocusFields(contract, underlying, symbol, focus string) bool {
+	target := normalizeToken(focus)
+	if target == "" {
+		return false
+	}
+	for _, candidate := range focusMatchCandidates(contract, underlying, symbol) {
+		if normalizeToken(candidate) == target {
+			return true
+		}
+	}
+	return false
+}
+
+func focusMatchCandidates(contract, underlying, symbol string) []string {
+	candidates := make([]string, 0, 5)
+	appendIfPresent := func(value string) {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			return
+		}
+		candidates = append(candidates, trimmed)
+	}
+	appendIfPresent(contract)
+	appendIfPresent(underlying)
+	appendIfPresent(symbol)
+	inferredUnderlying := inferOptionUnderlyingFromContract(contract)
+	appendIfPresent(inferredUnderlying)
+	appendIfPresent(inferContractRoot(firstNonEmpty(underlying, inferredUnderlying, contract)))
+	return candidates
+}
+
 func filterOptionsRows(rows []map[string]any, focus string) []map[string]any {
 	target := strings.TrimSpace(focus)
 	if target == "" {
@@ -1727,7 +1800,7 @@ func filterOptionsRows(rows []map[string]any, focus string) []map[string]any {
 		contract := strings.TrimSpace(asString(row["ctp_contract"]))
 		underlying := strings.TrimSpace(asString(row["underlying"]))
 		symbol := strings.TrimSpace(asString(row["symbol"]))
-		if strings.EqualFold(contract, target) || strings.EqualFold(underlying, target) || strings.EqualFold(symbol, target) {
+		if matchesFocusFields(contract, underlying, symbol, target) {
 			filtered = append(filtered, row)
 		}
 	}
@@ -1909,7 +1982,9 @@ type flowEvent struct {
 }
 
 type flowUnderlyingAgg struct {
-	Underlying string
+	Underlying    string
+	WindowStartTS int64
+	WindowEndTS   int64
 
 	UnderDirection float64
 	UnderVol       float64
@@ -1945,6 +2020,25 @@ type flowPairCandidate struct {
 	PairScore float64
 	EventIDA  string
 	EventIDB  string
+}
+
+type flowEmptyReason string
+
+const (
+	flowEmptyReasonNone            flowEmptyReason = ""
+	flowEmptyReasonNoSelected      flowEmptyReason = "no_selected_contracts"
+	flowEmptyReasonNoFocusedSymbol flowEmptyReason = "no_focused_symbol"
+)
+
+func flowEmptyMessage(reason flowEmptyReason) string {
+	switch reason {
+	case flowEmptyReasonNoFocusedSymbol:
+		return "Currently no focused symbol"
+	case flowEmptyReasonNoSelected:
+		return "Currently no contracts are selected"
+	default:
+		return ""
+	}
 }
 
 func (ui *UI) resetFlowAggregation() {
@@ -2075,15 +2169,16 @@ func (ui *UI) renderFlowAggregation() {
 		return
 	}
 	ui.pruneFlowEvents()
-	if len(ui.flowEvents) == 0 {
+	filteredEvents, emptyReason := ui.filterFlowEvents(ui.flowEvents)
+	if len(filteredEvents) == 0 {
 		ui.flowHasResult = false
 		ui.liveFlow.SetTitle("Flow Aggregation")
-		fillFlowTable(ui.liveFlow, nil)
+		fillFlowTable(ui.liveFlow, nil, flowEmptyMessage(emptyReason))
 		return
 	}
-	minTS := ui.flowEvents[0].TS
-	maxTS := ui.flowEvents[0].TS
-	for _, event := range ui.flowEvents {
+	minTS := filteredEvents[0].TS
+	maxTS := filteredEvents[0].TS
+	for _, event := range filteredEvents {
 		if event.TS < minTS {
 			minTS = event.TS
 		}
@@ -2097,19 +2192,18 @@ func (ui *UI) renderFlowAggregation() {
 		minAnalysisMillis = int64(defaultFlowMinAnalysisSeconds) * 1000
 	}
 	if spanMillis < minAnalysisMillis {
-		if !ui.flowHasResult {
-			ui.liveFlow.SetTitle(fmt.Sprintf(
-				"Flow Aggregation (%s ~ %s, collecting)",
-				time.UnixMilli(minTS).Format("15:04:05"),
-				time.UnixMilli(maxTS).Format("15:04:05"),
-			))
-			fillFlowTable(ui.liveFlow, nil)
-		}
+		ui.flowHasResult = false
+		ui.liveFlow.SetTitle(fmt.Sprintf(
+			"Flow Aggregation (%s ~ %s, collecting)",
+			time.UnixMilli(minTS).Format("15:04:05"),
+			time.UnixMilli(maxTS).Format("15:04:05"),
+		))
+		fillFlowTable(ui.liveFlow, nil, flowEmptyMessage(flowEmptyReasonNone))
 		return
 	}
 
 	eventsByUnderlying := make(map[string][]flowEvent)
-	for _, event := range ui.flowEvents {
+	for _, event := range filteredEvents {
 		underlying := strings.TrimSpace(event.Underlying)
 		if underlying == "" {
 			underlying = event.Contract
@@ -2124,12 +2218,20 @@ func (ui *UI) renderFlowAggregation() {
 		}
 		agg := flowUnderlyingAgg{
 			Underlying:     events[0].Underlying,
+			WindowStartTS:  events[0].TS,
+			WindowEndTS:    events[0].TS,
 			ContractImpact: make(map[string]float64),
 		}
 		if strings.TrimSpace(agg.Underlying) == "" {
 			agg.Underlying = events[0].Contract
 		}
 		for _, event := range events {
+			if event.TS < agg.WindowStartTS {
+				agg.WindowStartTS = event.TS
+			}
+			if event.TS > agg.WindowEndTS {
+				agg.WindowEndTS = event.TS
+			}
 			if event.WeightDirection == 0 &&
 				event.WeightVol == 0 &&
 				event.WeightGamma == 0 &&
@@ -2183,7 +2285,7 @@ func (ui *UI) renderFlowAggregation() {
 			time.UnixMilli(minTS).Format("15:04:05"),
 			time.UnixMilli(maxTS).Format("15:04:05"),
 		))
-		fillFlowTable(ui.liveFlow, nil)
+		fillFlowTable(ui.liveFlow, nil, flowEmptyMessage(flowEmptyReasonNone))
 		return
 	}
 
@@ -2211,6 +2313,7 @@ func (ui *UI) renderFlowAggregation() {
 				topContracts(agg.ContractImpact, 2),
 				",",
 			)),
+			TimeWindow: formatFlowWindow(agg.WindowStartTS, agg.WindowEndTS),
 		})
 	}
 
@@ -2221,6 +2324,129 @@ func (ui *UI) renderFlowAggregation() {
 		time.UnixMilli(maxTS).Format("15:04:05"),
 	))
 	fillFlowTable(ui.liveFlow, displayRows)
+}
+
+func (ui *UI) filterFlowEvents(events []flowEvent) ([]flowEvent, flowEmptyReason) {
+	focusSymbol := strings.TrimSpace(ui.currentFocusSymbol())
+	if ui.flowOnlyFocusedSymbol {
+		if !ui.hasValidFlowFocus(focusSymbol) {
+			return nil, flowEmptyReasonNoFocusedSymbol
+		}
+	}
+
+	selectedContracts := map[string]struct{}{}
+	if ui.flowOnlySelectedContracts {
+		selectedContracts = buildSelectedContractsSet(ui.marketRows)
+		if len(selectedContracts) == 0 {
+			return nil, flowEmptyReasonNoSelected
+		}
+	}
+
+	if !ui.flowOnlySelectedContracts && !ui.flowOnlyFocusedSymbol {
+		return events, flowEmptyReasonNone
+	}
+
+	filtered := make([]flowEvent, 0, len(events))
+	for _, event := range events {
+		if ui.flowOnlySelectedContracts {
+			if !eventMatchesSelectedContracts(event, selectedContracts) {
+				continue
+			}
+		}
+		if ui.flowOnlyFocusedSymbol && !eventMatchesFocus(event, focusSymbol) {
+			continue
+		}
+		filtered = append(filtered, event)
+	}
+	return filtered, flowEmptyReasonNone
+}
+
+func (ui *UI) hasValidFlowFocus(focus string) bool {
+	target := strings.TrimSpace(focus)
+	if target == "" {
+		return false
+	}
+	if ui.liveMarket == nil {
+		return true
+	}
+	return focusMatchesMarketRows(target, ui.marketRows)
+}
+
+func focusMatchesMarketRows(focus string, rows []MarketRow) bool {
+	target := strings.TrimSpace(focus)
+	if target == "" {
+		return false
+	}
+	for _, row := range rows {
+		contract := strings.TrimSpace(row.Symbol)
+		if contract == "" {
+			continue
+		}
+		if matchesFocusFields(contract, "", "", target) {
+			return true
+		}
+	}
+	return false
+}
+
+func buildSelectedContractsSet(rows []MarketRow) map[string]struct{} {
+	result := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		contract := normalizeToken(row.Symbol)
+		if contract == "" {
+			continue
+		}
+		result[contract] = struct{}{}
+	}
+	return result
+}
+
+func eventMatchesSelectedContracts(event flowEvent, selectedContracts map[string]struct{}) bool {
+	for _, candidate := range selectedContractCandidates(event) {
+		if _, ok := selectedContracts[normalizeToken(candidate)]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func selectedContractCandidates(event flowEvent) []string {
+	candidates := make([]string, 0, 3)
+	appendIfPresent := func(value string) {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			return
+		}
+		candidates = append(candidates, trimmed)
+	}
+	appendIfPresent(event.Contract)
+	appendIfPresent(event.Underlying)
+	appendIfPresent(inferOptionUnderlyingFromContract(event.Contract))
+	return candidates
+}
+
+func eventMatchesFocus(event flowEvent, focus string) bool {
+	return matchesFocusFields(event.Contract, event.Underlying, event.Symbol, focus)
+}
+
+func formatFlowWindow(startTS, endTS int64) string {
+	if startTS <= 0 && endTS <= 0 {
+		return "-"
+	}
+	if startTS <= 0 {
+		startTS = endTS
+	}
+	if endTS <= 0 {
+		endTS = startTS
+	}
+	if startTS > endTS {
+		startTS, endTS = endTS, startTS
+	}
+	return fmt.Sprintf(
+		"%s ~ %s",
+		time.UnixMilli(startTS).Format("15:04:05"),
+		time.UnixMilli(endTS).Format("15:04:05"),
+	)
 }
 
 func aggregateConfidence(agg flowUnderlyingAgg) float64 {
@@ -3942,6 +4168,7 @@ func (ui *UI) ensureFocusSymbol() {
 			ui.focusSymbol = ""
 			ui.focusSyncPending = false
 			ui.pushFocusSymbol("")
+			ui.renderFlowAggregation()
 		}
 		return
 	}
@@ -3956,6 +4183,7 @@ func (ui *UI) ensureFocusSymbol() {
 	ui.focusSymbol = symbol
 	ui.focusSyncPending = false
 	ui.pushFocusSymbol(symbol)
+	ui.renderFlowAggregation()
 }
 
 func (ui *UI) hasMarketSymbol(symbol string) bool {

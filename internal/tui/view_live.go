@@ -16,7 +16,7 @@ func (ui *UI) buildLiveScreen() tview.Primitive {
 	ui.liveMarket.SetBorder(true).SetTitle("Market (select a contract)")
 	ui.liveMarket.SetBorderColor(colorBorder).SetTitleColor(colorBorder)
 	ui.liveMarket.SetSelectionChangedFunc(func(row int, _ int) {
-		if row <= 0 || ui.rpcClient == nil {
+		if row <= 0 {
 			return
 		}
 		cell := ui.liveMarket.GetCell(row, 0)
@@ -29,7 +29,10 @@ func (ui *UI) buildLiveScreen() tview.Primitive {
 		}
 		ui.focusSymbol = symbol
 		ui.focusSyncPending = false
-		ui.pushFocusSymbol(symbol)
+		if ui.rpcClient != nil {
+			ui.pushFocusSymbol(symbol)
+		}
+		ui.renderFlowAggregation()
 	})
 
 	if runtimeDebugUIEnabled() {
@@ -166,9 +169,10 @@ type FlowRow struct {
 	Confidence   string
 	PatternHint  string
 	TopContracts string
+	TimeWindow   string
 }
 
-func fillFlowTable(table *tview.Table, rows []FlowRow) {
+func fillFlowTable(table *tview.Table, rows []FlowRow, emptyMessage ...string) {
 	table.Clear()
 	headers := []string{
 		"UNDERLYING",
@@ -180,6 +184,7 @@ func fillFlowTable(table *tview.Table, rows []FlowRow) {
 		"CONFIDENCE",
 		"PATTERN_HINT",
 		"TOP_CONTRACTS",
+		"TIME_WINDOW",
 	}
 	for col, label := range headers {
 		cell := tview.NewTableCell(padTableCell(label)).
@@ -189,7 +194,11 @@ func fillFlowTable(table *tview.Table, rows []FlowRow) {
 		table.SetCell(0, col, cell)
 	}
 	if len(rows) == 0 {
-		cell := tview.NewTableCell("Waiting for unusual events...").
+		message := "Waiting for unusual events..."
+		if len(emptyMessage) > 0 && strings.TrimSpace(emptyMessage[0]) != "" {
+			message = emptyMessage[0]
+		}
+		cell := tview.NewTableCell(message).
 			SetTextColor(colorMuted).
 			SetAlign(tview.AlignLeft).
 			SetSelectable(false)
@@ -207,6 +216,7 @@ func fillFlowTable(table *tview.Table, rows []FlowRow) {
 			row.Confidence,
 			row.PatternHint,
 			row.TopContracts,
+			row.TimeWindow,
 		}
 		for col, value := range values {
 			cell := tview.NewTableCell(padTableCell(value)).
