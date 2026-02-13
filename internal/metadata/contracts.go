@@ -1,32 +1,22 @@
 package metadata
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 )
-
-type contractPayload struct {
-	Data []struct {
-		InstrumentID string `json:"InstrumentID"`
-	} `json:"data"`
-}
 
 func LoadContractInstrumentIDs() ([]string, error) {
 	cached, err := Load("contract")
 	if err != nil {
 		return nil, err
 	}
-	var payload contractPayload
-	if err := json.Unmarshal(cached.Data, &payload); err != nil {
+	rows, err := parseContractRows(cached.Data)
+	if err != nil {
 		return nil, fmt.Errorf("parse contract metadata: %w", err)
 	}
-	if len(payload.Data) == 0 {
-		return nil, fmt.Errorf("contract metadata empty")
-	}
-	seen := make(map[string]struct{}, len(payload.Data))
-	out := make([]string, 0, len(payload.Data))
-	for _, item := range payload.Data {
+	seen := make(map[string]struct{}, len(rows))
+	out := make([]string, 0, len(rows))
+	for _, item := range rows {
 		id := strings.TrimSpace(item.InstrumentID)
 		if id == "" {
 			continue

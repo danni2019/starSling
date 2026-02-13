@@ -1,6 +1,7 @@
 import argparse
 import json
 import math
+import os
 import re
 import socket
 import struct
@@ -100,6 +101,336 @@ def _normalize_tte_days(value):
     if tte_days < 0:
         return None
     return max(float(tte_days), MIN_TTE_DAYS)
+
+
+def _norm_contract_key(value):
+    text = _sanitize_text(value)
+    if text is None:
+        return None
+    return text.lower()
+
+
+def metadata_cache_dirs() -> list[str]:
+    dirs = []
+    if sys.platform == "darwin":
+        dirs.append(os.path.join(os.path.expanduser("~"), "Library", "Application Support", "starsling", "metadata"))
+    else:
+        xdg = os.environ.get("XDG_CONFIG_HOME")
+        if xdg:
+            dirs.append(os.path.join(xdg, "starsling", "metadata"))
+        else:
+            dirs.append(os.path.join(os.path.expanduser("~"), ".config", "starsling", "metadata"))
+    dirs.append(os.path.join(os.getcwd(), "runtime", "metadata"))
+    return dirs
+
+
+def load_metadata_payload(name: str):
+    filename = f"{name}.json"
+    for base in metadata_cache_dirs():
+        path = os.path.join(base, filename)
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                cached = json.load(handle)
+            return cached.get("data")
+        except FileNotFoundError:
+            continue
+        except Exception as exc:
+            log(f"metadata load failed ({name}): {exc}")
+            continue
+    return None
+
+
+def _parse_contract_metadata_rows(payload):
+    if payload is None:
+        return []
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        data = payload.get("data")
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            nested = data.get("data")
+            if isinstance(nested, list):
+                return nested
+    return []
+
+
+class _ContractMetadataCache:
+    def __init__(self):
+        self._by_contract = {}
+        self._option_root_to_underlying_symbol = {}
+
+    def load(self):
+        payload = load_metadata_payload("contract")
+        rows = _parse_contract_metadata_rows(payload)
+        next_map = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            contract = _sanitize_text(row.get("InstrumentID"))
+            if contract is None:
+                continue
+            raw_symbol = _sanitize_text(row.get("ProductID"))
+            product_class = _sanitize_text(row.get("ProductClass"))
+            option_type_cp = _option_type_to_cp(row.get("OptionsType"))
+            next_map[_norm_contract_key(contract)] = {
+                "symbol": None,
+                "raw_symbol": raw_symbol,
+                "underlying": _sanitize_text(row.get("UnderlyingInstrID")),
+                "product_class": product_class,
+                "option_type_cp": option_type_cp,
+                "contract": contract,
+            }
+        for key, row in next_map.items():
+            if row.get("product_class") == "2":
+                continue
+            symbol = _normalize_product_symbol(row.get("raw_symbol"))
+            if symbol is None:
+                symbol = _contract_root(row.get("contract"))
+            row["symbol"] = symbol
+            next_map[key] = row
+        option_root_to_underlying_symbol = {}
+        for key, row in next_map.items():
+            if row.get("product_class") != "2":
+                continue
+            symbol = None
+            underlying = row.get("underlying")
+            if underlying is not None:
+                under_row = next_map.get(_norm_contract_key(underlying))
+                if under_row is not None:
+                    symbol = _sanitize_text(under_row.get("symbol"))
+            if symbol is None:
+                symbol = _normalize_option_product_symbol(row.get("raw_symbol"), row.get("option_type_cp"))
+            if symbol is None:
+                symbol = _contract_root(row.get("contract"))
+            row["symbol"] = symbol
+            next_map[key] = row
+            root = _contract_root(row.get("contract"))
+            if root is not None:
+                root_key = root.lower()
+                if root_key not in option_root_to_underlying_symbol and symbol is not None:
+                    option_root_to_underlying_symbol[root_key] = symbol
+        self._by_contract = next_map
+        self._option_root_to_underlying_symbol = option_root_to_underlying_symbol
+        if not next_map:
+            log("contract metadata mappings unavailable in options worker; fallback inference only")
+
+    def _get(self, contract):
+        key = _norm_contract_key(contract)
+        if key is None:
+            return None
+        return self._by_contract.get(key)
+
+    def resolve_contract_symbol(self, contract):
+        row = self._get(contract)
+        if row is None:
+            return None
+        return row.get("symbol")
+
+    def resolve_option_underlying(self, contract):
+        row = self._get(contract)
+        if row is None:
+            return None
+        if row.get("product_class") != "2":
+            return None
+        return row.get("underlying")
+
+    def resolve_option_type_cp(self, contract):
+        row = self._get(contract)
+        if row is None:
+            return None
+        return row.get("option_type_cp")
+
+    def infer_contract_symbol(self, contract):
+        root = _contract_root(contract)
+        if root is None:
+            return None
+        mapped = self._option_root_to_underlying_symbol.get(root.lower())
+        if mapped is not None:
+            return mapped
+        return root
+
+    def infer_option_underlying(self, contract):
+        underlying = _infer_option_underlying_from_contract(contract)
+        if underlying is None:
+            return None
+        root = _contract_root(contract)
+        if root is None:
+            return underlying
+        symbol = self._option_root_to_underlying_symbol.get(root.lower())
+        if symbol is None:
+            return underlying
+        replaced = _replace_contract_root(underlying, symbol)
+        if replaced is not None:
+            return replaced
+        return underlying
+
+    def infer_option_type_cp(self, contract):
+        return _infer_option_type_from_contract(contract)
+
+
+def _option_contract_cp_index(contract):
+    token = _sanitize_text(contract)
+    if token is None:
+        return -1
+    upper = token.upper()
+    if len(upper) < 3:
+        return -1
+    idx = upper.rfind("-C-")
+    if idx > 0:
+        return idx + 1
+    idx = upper.rfind("-P-")
+    if idx > 0:
+        return idx + 1
+    for i in range(len(upper) - 2, 0, -1):
+        ch = upper[i]
+        if ch not in ("C", "P"):
+            continue
+        suffix = upper[i + 1:]
+        if suffix == "":
+            continue
+        all_digits = True
+        for c in suffix:
+            if c < "0" or c > "9":
+                all_digits = False
+                break
+        if not all_digits:
+            continue
+        prefix = upper[:i]
+        has_digit = False
+        for c in prefix:
+            if "0" <= c <= "9":
+                has_digit = True
+                break
+        if not has_digit:
+            continue
+        return i
+    return -1
+
+
+def _infer_option_type_from_contract(contract):
+    token = _sanitize_text(contract)
+    if token is None:
+        return None
+    idx = _option_contract_cp_index(token)
+    if idx < 0:
+        return None
+    return "c" if token.upper()[idx] == "C" else "p"
+
+
+def _infer_option_underlying_from_contract(contract):
+    token = _sanitize_text(contract)
+    if token is None:
+        return None
+    idx = _option_contract_cp_index(token)
+    if idx <= 0:
+        return None
+    underlying = token[:idx].strip().rstrip("-_")
+    head = _leading_contract_token(underlying)
+    if head is not None:
+        return head
+    return underlying
+
+
+def _leading_contract_token(contract):
+    token = _sanitize_text(contract)
+    if token is None:
+        return None
+    idx = 0
+    while idx < len(token) and token[idx].isalpha():
+        idx += 1
+    if idx == 0:
+        return None
+    digit_start = idx
+    while idx < len(token) and token[idx].isdigit():
+        idx += 1
+    if idx == digit_start:
+        return None
+    return token[:idx]
+
+
+def _normalize_product_symbol(symbol):
+    token = _sanitize_text(symbol)
+    if token is None:
+        return None
+    if "_" in token:
+        token = token.split("_", 1)[0]
+    token = token.strip()
+    if token == "":
+        return None
+    return token
+
+
+def _normalize_option_product_symbol(symbol, option_cp):
+    base = _normalize_product_symbol(symbol)
+    if base is None:
+        return None
+    cp = _sanitize_text(option_cp)
+    if cp is not None:
+        cp = cp.lower()
+    if cp == "c" and len(base) > 1 and base[-1].lower() == "c":
+        base = base[:-1]
+    if cp == "p" and len(base) > 1 and base[-1].lower() == "p":
+        base = base[:-1]
+    base = base.strip()
+    if base == "":
+        return None
+    return base
+
+
+def _replace_contract_root(contract, symbol):
+    token = _sanitize_text(contract)
+    symbol = _sanitize_text(symbol)
+    if token is None or symbol is None:
+        return None
+    root = _contract_root(token)
+    if root is None:
+        return None
+    return symbol + token[len(root):]
+
+
+CONTRACT_METADATA_CACHE = _ContractMetadataCache()
+CONTRACT_METADATA_CACHE.load()
+
+
+def _resolve_option_underlying(contract, existing_underlying):
+    mapped = CONTRACT_METADATA_CACHE.resolve_option_underlying(contract)
+    if mapped is not None:
+        return mapped
+    fallback = _sanitize_text(existing_underlying)
+    if fallback is not None:
+        return fallback
+    inferred = CONTRACT_METADATA_CACHE.infer_option_underlying(contract)
+    if inferred is not None:
+        return inferred
+    return None
+
+
+def _resolve_contract_symbol(contract, existing_symbol):
+    mapped = CONTRACT_METADATA_CACHE.resolve_contract_symbol(contract)
+    if mapped is not None:
+        return mapped
+    fallback = _sanitize_text(existing_symbol)
+    if fallback is not None:
+        return fallback
+    inferred = CONTRACT_METADATA_CACHE.infer_contract_symbol(contract)
+    if inferred is not None:
+        return inferred
+    return None
+
+
+def _resolve_option_type_cp(contract, raw_option_type):
+    mapped = CONTRACT_METADATA_CACHE.resolve_option_type_cp(contract)
+    if mapped is not None:
+        return mapped
+    inferred = CONTRACT_METADATA_CACHE.infer_option_type_cp(contract)
+    if inferred is not None:
+        return inferred
+    fallback = _option_type_to_cp(raw_option_type)
+    if fallback is not None:
+        return fallback
+    return None
 
 
 def _read_exact(conn: socket.socket, size: int) -> bytes:
@@ -405,8 +736,8 @@ def _option_row_matches_focus(row, focus_symbol):
     if focus is None:
         return False
     contract = _norm_token(row.get("ctp_contract"))
-    underlying = _norm_token(row.get("underlying"))
-    symbol = _norm_token(row.get("symbol"))
+    underlying = _norm_token(_resolve_option_underlying(row.get("ctp_contract"), row.get("underlying")))
+    symbol = _norm_token(_resolve_contract_symbol(row.get("ctp_contract"), row.get("symbol")))
     return contract == focus or underlying == focus or symbol == focus
 
 
@@ -480,10 +811,21 @@ def build_options_snapshot(rows, risk_free_rate: float):
         raw_under = raw_under.dropna(subset=["contract_norm", "last"])
         under_map = raw_under.set_index("contract_norm")["last"].to_dict()
 
-    options_df["underlying"] = options_df.get("underlying", pd.Series(dtype="string")).astype("string")
+    options_df["ctp_contract"] = options_df.get("ctp_contract", pd.Series(dtype="string")).astype("string")
+    options_df["underlying"] = options_df.apply(
+        lambda row: _resolve_option_underlying(row.get("ctp_contract"), row.get("underlying")),
+        axis=1,
+    )
+    options_df["symbol"] = options_df.apply(
+        lambda row: _resolve_contract_symbol(row.get("ctp_contract"), row.get("symbol")),
+        axis=1,
+    )
+    options_df["option_type_cp"] = options_df.apply(
+        lambda row: _resolve_option_type_cp(row.get("ctp_contract"), row.get("option_type")),
+        axis=1,
+    )
     options_df["underlying_norm"] = options_df["underlying"].astype("string").str.strip().str.lower()
     options_df["underlying_price"] = options_df["underlying_norm"].map(under_map)
-    options_df["option_type_cp"] = options_df.get("option_type", pd.Series(dtype="string")).map(_option_type_to_cp)
     options_df["strike"] = pd.to_numeric(options_df.get("strike"), errors="coerce")
     options_df["last"] = pd.to_numeric(options_df.get("last"), errors="coerce")
     options_df["volume"] = pd.to_numeric(options_df.get("volume"), errors="coerce")
@@ -614,8 +956,11 @@ def build_curve_snapshot(market_rows, option_rows, focus_symbol=None) -> dict:
 
     futures_df["ctp_contract"] = futures_df.get("ctp_contract", pd.Series(dtype="string")).astype("string")
     futures_df["contract_norm"] = futures_df["ctp_contract"].astype("string").str.strip().str.lower()
-    futures_df["underlying_norm"] = futures_df.get("underlying", pd.Series(dtype="string")).astype("string").str.strip().str.lower()
-    futures_df["symbol_norm"] = futures_df.get("symbol", pd.Series(dtype="string")).astype("string").str.strip().str.lower()
+    futures_df["resolved_symbol"] = futures_df.apply(
+        lambda row: _resolve_contract_symbol(row.get("ctp_contract"), row.get("symbol")),
+        axis=1,
+    )
+    futures_df["resolved_symbol_norm"] = futures_df["resolved_symbol"].astype("string").str.strip().str.lower()
     futures_df["last"] = pd.to_numeric(futures_df.get("last"), errors="coerce")
     futures_df["volume"] = pd.to_numeric(futures_df.get("volume"), errors="coerce")
     futures_df["open_interest"] = pd.to_numeric(futures_df.get("open_interest"), errors="coerce")
@@ -626,21 +971,16 @@ def build_curve_snapshot(market_rows, option_rows, focus_symbol=None) -> dict:
     futures_df = futures_df.dropna(subset=["contract_norm", "last"])
 
     focus_norm = _norm_token(focus_symbol)
-    focus_underlying = None
+    focus_group = None
     if focus_norm is not None:
         focus_rows = futures_df[futures_df["contract_norm"] == focus_norm]
         if not focus_rows.empty:
             focus_row = focus_rows.iloc[0]
-            focus_underlying = _norm_token(focus_row.get("underlying_norm"))
-            if focus_underlying is None or focus_underlying == "":
-                focus_underlying = _norm_token(focus_row.get("symbol_norm"))
-            if focus_underlying is None or focus_underlying == "":
-                focus_underlying = _contract_root(focus_norm)
-        if focus_underlying is not None and focus_underlying != "":
-            futures_df = futures_df[
-                (futures_df["underlying_norm"] == focus_underlying) |
-                (futures_df["symbol_norm"] == focus_underlying)
-            ]
+            focus_group = _norm_token(focus_row.get("resolved_symbol_norm"))
+        if focus_group is None or focus_group == "":
+            focus_group = _norm_token(_resolve_contract_symbol(focus_symbol, None))
+        if focus_group is not None and focus_group != "":
+            futures_df = futures_df[futures_df["resolved_symbol_norm"] == focus_group]
         else:
             futures_df = futures_df[futures_df["contract_norm"] == focus_norm]
 
@@ -678,7 +1018,7 @@ def build_curve_snapshot(market_rows, option_rows, focus_symbol=None) -> dict:
         })
     return {"schema_version": 1, "ts": ts, "rows": rows_out}, {
         "focus_symbol": focus_norm or "",
-        "focus_underlying": focus_underlying or "",
+        "focus_underlying": focus_group or "",
         "contracts": len(rows_out),
     }
 

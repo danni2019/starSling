@@ -24,6 +24,7 @@ import (
 	"github.com/danni2019/starSling/internal/ipc"
 	"github.com/danni2019/starSling/internal/live"
 	"github.com/danni2019/starSling/internal/logging"
+	"github.com/danni2019/starSling/internal/metadata"
 	"github.com/danni2019/starSling/internal/router"
 )
 
@@ -74,6 +75,7 @@ type UI struct {
 	logger     *slog.Logger
 	routerAddr string
 	rpcClient  *ipc.Client
+	metadata   *metadata.ContractMappings
 
 	screenMu   sync.RWMutex
 	screen     screen
@@ -181,12 +183,17 @@ func newUI(routerAddr string, logger *slog.Logger) *UI {
 	if logger == nil {
 		logger = logging.New("INFO")
 	}
+	mappings, err := metadata.LoadContractMappings()
+	if err != nil {
+		logger.Warn("load contract metadata mappings failed", "error", err)
+	}
 	ui := &UI{
 		app:                     tview.NewApplication(),
 		pages:                   tview.NewPages(),
 		data:                    mockData(),
 		logger:                  logger,
 		routerAddr:              strings.TrimSpace(routerAddr),
+		metadata:                mappings,
 		screen:                  screenMain,
 		marketSortBy:            "vol",
 		marketSortAsc:           false,
@@ -502,6 +509,9 @@ func (ui *UI) openUnusualThresholdSettings() {
 
 func (ui *UI) openFlowSettings() {
 	ui.setCurrentScreen(screenDrilldown)
+	selectedOnly, focusedOnly := normalizeExclusiveFlowFilters(ui.flowOnlySelectedContracts, ui.flowOnlyFocusedSymbol)
+	ui.flowOnlySelectedContracts = selectedOnly
+	ui.flowOnlyFocusedSymbol = focusedOnly
 
 	windowInput := tview.NewInputField().
 		SetLabel("window_size(sec) [60,300]: ").
@@ -510,11 +520,28 @@ func (ui *UI) openFlowSettings() {
 		SetLabel("min_analysis(sec) [15,60]: ").
 		SetText(strconv.Itoa(ui.flowMinAnalysisSeconds))
 	selectedContractsBox := tview.NewCheckbox().
-		SetLabel("Only focused symbol").
-		SetChecked(ui.flowOnlySelectedContracts)
-	focusedSymbolBox := tview.NewCheckbox().
 		SetLabel("Only selected contracts").
-		SetChecked(ui.flowOnlyFocusedSymbol)
+		SetChecked(selectedOnly)
+	focusedSymbolBox := tview.NewCheckbox().
+		SetLabel("Only focused symbol").
+		SetChecked(focusedOnly)
+	syncingExclusive := false
+	selectedContractsBox.SetChangedFunc(func(checked bool) {
+		if syncingExclusive || !checked {
+			return
+		}
+		syncingExclusive = true
+		focusedSymbolBox.SetChecked(false)
+		syncingExclusive = false
+	})
+	focusedSymbolBox.SetChangedFunc(func(checked bool) {
+		if syncingExclusive || !checked {
+			return
+		}
+		syncingExclusive = true
+		selectedContractsBox.SetChecked(false)
+		syncingExclusive = false
+	})
 	hint := tview.NewTextView().
 		SetTextColor(colorMuted).
 		SetText(" ")
@@ -533,8 +560,12 @@ func (ui *UI) openFlowSettings() {
 	form.SetButtonTextColor(colorMenuSelected)
 
 	form.AddButton("Apply", func() {
-		ui.flowOnlySelectedContracts = selectedContractsBox.IsChecked()
-		ui.flowOnlyFocusedSymbol = focusedSymbolBox.IsChecked()
+		selectedOnly, focusedOnly := normalizeExclusiveFlowFilters(
+			selectedContractsBox.IsChecked(),
+			focusedSymbolBox.IsChecked(),
+		)
+		ui.flowOnlySelectedContracts = selectedOnly
+		ui.flowOnlyFocusedSymbol = focusedOnly
 		valid := ui.applyFlowSettings(windowInput.GetText(), minWindowInput.GetText())
 		windowInput.SetText(strconv.Itoa(ui.flowWindowSeconds))
 		minWindowInput.SetText(strconv.Itoa(ui.flowMinAnalysisSeconds))
@@ -933,6 +964,7 @@ func (ui *UI) renderOptionsSnapshot() {
 		return
 	}
 	ui.liveOpts.SetText(renderOptionsPanel(
+		ui.metadata,
 		ui.optionsRawRows,
 		ui.currentFocusSymbol(),
 		optionRenderFilter{
@@ -1460,6 +1492,18 @@ type optionRenderFilter struct {
 	DefaultMax  float64
 }
 
+type contractResolver interface {
+	ResolveOptionUnderlying(contract string) (string, bool)
+	ResolveContractSymbol(contract string) (string, bool)
+	ResolveOptionTypeCP(contract string) (string, bool)
+}
+
+type contractFallbackResolver interface {
+	InferOptionUnderlying(contract string) (string, bool)
+	InferContractSymbol(contract string) (string, bool)
+	InferOptionTypeCP(contract string) (string, bool)
+}
+
 func inferOptionTypeFromContract(contract string) string {
 	trimmed := strings.TrimSpace(contract)
 	upper := strings.ToUpper(trimmed)
@@ -1482,7 +1526,12 @@ func inferOptionUnderlyingFromContract(contract string) string {
 	if idx <= 0 {
 		return ""
 	}
-	return strings.TrimSpace(trimmed[:idx])
+	underlying := strings.TrimSpace(trimmed[:idx])
+	underlying = strings.TrimRight(underlying, "-_")
+	if token := leadingContractToken(underlying); token != "" {
+		return token
+	}
+	return underlying
 }
 
 func optionContractCPIndex(contract string) int {
@@ -1490,14 +1539,33 @@ func optionContractCPIndex(contract string) int {
 	if len(upper) < 3 {
 		return -1
 	}
+	if idx := strings.LastIndex(upper, "-C-"); idx > 0 {
+		return idx + 1
+	}
+	if idx := strings.LastIndex(upper, "-P-"); idx > 0 {
+		return idx + 1
+	}
 	for i := len(upper) - 2; i >= 1; i-- {
 		ch := upper[i]
 		if ch != 'C' && ch != 'P' {
 			continue
 		}
-		prev := upper[i-1]
-		next := upper[i+1]
-		if prev < '0' || prev > '9' || next < '0' || next > '9' {
+		suffix := upper[i+1:]
+		if suffix == "" {
+			continue
+		}
+		allDigits := true
+		for _, c := range suffix {
+			if c < '0' || c > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if !allDigits {
+			continue
+		}
+		prefix := upper[:i]
+		if !strings.ContainsAny(prefix, "0123456789") {
 			continue
 		}
 		return i
@@ -1505,12 +1573,131 @@ func optionContractCPIndex(contract string) int {
 	return -1
 }
 
-func renderOptionsPanel(rows []map[string]any, focusSymbol string, filter optionRenderFilter) string {
+func leadingContractToken(contract string) string {
+	contract = strings.TrimSpace(contract)
+	if contract == "" {
+		return ""
+	}
+	idx := 0
+	for idx < len(contract) {
+		ch := contract[idx]
+		if (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') {
+			idx++
+			continue
+		}
+		break
+	}
+	if idx == 0 {
+		return ""
+	}
+	digitStart := idx
+	for idx < len(contract) {
+		ch := contract[idx]
+		if ch >= '0' && ch <= '9' {
+			idx++
+			continue
+		}
+		break
+	}
+	if idx == digitStart {
+		return ""
+	}
+	return contract[:idx]
+}
+
+func resolveOptionTypeCP(contract string, resolver contractResolver) (string, bool) {
+	if resolver == nil {
+		cp := strings.ToLower(strings.TrimSpace(inferOptionTypeFromContract(contract)))
+		if cp == "c" || cp == "p" {
+			return cp, true
+		}
+		return "", false
+	}
+	cp, ok := resolver.ResolveOptionTypeCP(contract)
+	if !ok || strings.TrimSpace(cp) == "" {
+		if fallback, ok := resolver.(contractFallbackResolver); ok {
+			if inferred, ok := fallback.InferOptionTypeCP(contract); ok {
+				cp = inferred
+				ok = true
+			}
+		}
+	}
+	if !ok || strings.TrimSpace(cp) == "" {
+		cp = inferOptionTypeFromContract(contract)
+	}
+	cp = strings.ToLower(strings.TrimSpace(cp))
+	if cp != "c" && cp != "p" {
+		return "", false
+	}
+	return cp, true
+}
+
+func resolveOptionUnderlying(contract, existing string, resolver contractResolver) (string, bool) {
+	if resolver != nil {
+		if underlying, ok := resolver.ResolveOptionUnderlying(contract); ok {
+			underlying = strings.TrimSpace(underlying)
+			if underlying != "" {
+				return underlying, true
+			}
+		}
+	}
+	existing = strings.TrimSpace(existing)
+	if existing != "" {
+		return existing, true
+	}
+	if resolver != nil {
+		if fallback, ok := resolver.(contractFallbackResolver); ok {
+			if underlying, ok := fallback.InferOptionUnderlying(contract); ok {
+				underlying = strings.TrimSpace(underlying)
+				if underlying != "" {
+					return underlying, true
+				}
+			}
+		}
+	}
+	inferred := inferOptionUnderlyingFromContract(contract)
+	if inferred != "" {
+		return inferred, true
+	}
+	return "", false
+}
+
+func resolveContractSymbol(contract, existing string, resolver contractResolver) (string, bool) {
+	if resolver != nil {
+		if symbol, ok := resolver.ResolveContractSymbol(contract); ok {
+			symbol = strings.TrimSpace(symbol)
+			if symbol != "" {
+				return symbol, true
+			}
+		}
+	}
+	existing = strings.TrimSpace(existing)
+	if existing != "" {
+		return existing, true
+	}
+	if resolver != nil {
+		if fallback, ok := resolver.(contractFallbackResolver); ok {
+			if symbol, ok := fallback.InferContractSymbol(contract); ok {
+				symbol = strings.TrimSpace(symbol)
+				if symbol != "" {
+					return symbol, true
+				}
+			}
+		}
+	}
+	inferred := inferContractRoot(contract)
+	if inferred != "" {
+		return inferred, true
+	}
+	return "", false
+}
+
+func renderOptionsPanel(resolver contractResolver, rows []map[string]any, focusSymbol string, filter optionRenderFilter) string {
 	focusText := strings.TrimSpace(focusSymbol)
 	if focusText == "" {
 		return "Select a contract."
 	}
-	rows = filterOptionsRows(rows, focusText)
+	rows = filterOptionsRowsWithResolver(rows, focusText, resolver)
 	if len(rows) == 0 {
 		return "Select a contract."
 	}
@@ -1600,7 +1787,11 @@ func renderOptionsPanel(rows []map[string]any, focusSymbol string, filter option
 		}
 		cp := strings.ToLower(strings.TrimSpace(asString(row["option_type"])))
 		if cp == "" {
-			cp = inferOptionTypeFromContract(contract)
+			if resolvedCP, ok := resolveOptionTypeCP(contract, resolver); ok {
+				cp = resolvedCP
+			} else {
+				cp = inferOptionTypeFromContract(contract)
+			}
 		}
 		if cp != "c" && cp != "p" {
 			continue
@@ -1759,12 +1950,12 @@ func normalizeToken(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 
-func matchesFocusFields(contract, underlying, symbol, focus string) bool {
+func matchesFocusFields(contract, underlying, symbol, focus string, resolver contractResolver) bool {
 	target := normalizeToken(focus)
 	if target == "" {
 		return false
 	}
-	for _, candidate := range focusMatchCandidates(contract, underlying, symbol) {
+	for _, candidate := range focusMatchCandidates(contract, underlying, symbol, resolver) {
 		if normalizeToken(candidate) == target {
 			return true
 		}
@@ -1772,25 +1963,47 @@ func matchesFocusFields(contract, underlying, symbol, focus string) bool {
 	return false
 }
 
-func focusMatchCandidates(contract, underlying, symbol string) []string {
+func focusMatchCandidates(contract, underlying, symbol string, resolver contractResolver) []string {
 	candidates := make([]string, 0, 5)
+	seen := make(map[string]struct{}, 5)
 	appendIfPresent := func(value string) {
 		trimmed := strings.TrimSpace(value)
 		if trimmed == "" {
 			return
 		}
+		key := normalizeToken(trimmed)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
 		candidates = append(candidates, trimmed)
 	}
 	appendIfPresent(contract)
-	appendIfPresent(underlying)
-	appendIfPresent(symbol)
-	inferredUnderlying := inferOptionUnderlyingFromContract(contract)
-	appendIfPresent(inferredUnderlying)
-	appendIfPresent(inferContractRoot(firstNonEmpty(underlying, inferredUnderlying, contract)))
+	resolvedUnderlying := ""
+	if value, ok := resolveOptionUnderlying(contract, underlying, resolver); ok {
+		resolvedUnderlying = value
+		appendIfPresent(resolvedUnderlying)
+	} else {
+		appendIfPresent(underlying)
+	}
+	if resolvedContractSymbol, ok := resolveContractSymbol(contract, symbol, resolver); ok {
+		appendIfPresent(resolvedContractSymbol)
+	} else {
+		appendIfPresent(symbol)
+	}
+	if resolvedUnderlying != "" {
+		if resolvedUnderlyingSymbol, ok := resolveContractSymbol(resolvedUnderlying, "", resolver); ok {
+			appendIfPresent(resolvedUnderlyingSymbol)
+		}
+	}
 	return candidates
 }
 
 func filterOptionsRows(rows []map[string]any, focus string) []map[string]any {
+	return filterOptionsRowsWithResolver(rows, focus, nil)
+}
+
+func filterOptionsRowsWithResolver(rows []map[string]any, focus string, resolver contractResolver) []map[string]any {
 	target := strings.TrimSpace(focus)
 	if target == "" {
 		return nil
@@ -1800,7 +2013,7 @@ func filterOptionsRows(rows []map[string]any, focus string) []map[string]any {
 		contract := strings.TrimSpace(asString(row["ctp_contract"]))
 		underlying := strings.TrimSpace(asString(row["underlying"]))
 		symbol := strings.TrimSpace(asString(row["symbol"]))
-		if matchesFocusFields(contract, underlying, symbol, target) {
+		if matchesFocusFields(contract, underlying, symbol, target, resolver) {
 			filtered = append(filtered, row)
 		}
 	}
@@ -2022,6 +2235,14 @@ type flowPairCandidate struct {
 	EventIDB  string
 }
 
+func normalizeExclusiveFlowFilters(onlySelected, onlyFocused bool) (bool, bool) {
+	if onlySelected && onlyFocused {
+		// Focused filter has higher priority because it is the narrower scope.
+		return false, true
+	}
+	return onlySelected, onlyFocused
+}
+
 type flowEmptyReason string
 
 const (
@@ -2086,7 +2307,7 @@ func (ui *UI) ingestFlowEvents(rows []map[string]any) {
 		} else {
 			delete(ui.flowPrevByContract, contract)
 		}
-		event, currFrame, ok := toFlowEventWithContext(row, prevFrame, optionRowsByContract[contract])
+		event, currFrame, ok := toFlowEventWithContext(row, prevFrame, optionRowsByContract[contract], ui.metadata)
 		if !ok {
 			continue
 		}
@@ -2327,33 +2548,46 @@ func (ui *UI) renderFlowAggregation() {
 }
 
 func (ui *UI) filterFlowEvents(events []flowEvent) ([]flowEvent, flowEmptyReason) {
+	onlySelected, onlyFocused := normalizeExclusiveFlowFilters(ui.flowOnlySelectedContracts, ui.flowOnlyFocusedSymbol)
+	ui.flowOnlySelectedContracts = onlySelected
+	ui.flowOnlyFocusedSymbol = onlyFocused
+
 	focusSymbol := strings.TrimSpace(ui.currentFocusSymbol())
-	if ui.flowOnlyFocusedSymbol {
-		if !ui.hasValidFlowFocus(focusSymbol) {
+	focusedContracts := map[string]struct{}{}
+	if onlyFocused {
+		if normalizeToken(focusSymbol) == "" {
+			return nil, flowEmptyReasonNoFocusedSymbol
+		}
+		focusedContracts = buildFocusedContractsSet(
+			focusedContractsSource(ui.lastCurveContracts, ui.marketRows),
+			focusSymbol,
+			ui.metadata,
+		)
+		if len(focusedContracts) == 0 {
 			return nil, flowEmptyReasonNoFocusedSymbol
 		}
 	}
 
 	selectedContracts := map[string]struct{}{}
-	if ui.flowOnlySelectedContracts {
+	if onlySelected {
 		selectedContracts = buildSelectedContractsSet(ui.marketRows)
 		if len(selectedContracts) == 0 {
 			return nil, flowEmptyReasonNoSelected
 		}
 	}
 
-	if !ui.flowOnlySelectedContracts && !ui.flowOnlyFocusedSymbol {
+	if !onlySelected && !onlyFocused {
 		return events, flowEmptyReasonNone
 	}
 
 	filtered := make([]flowEvent, 0, len(events))
 	for _, event := range events {
-		if ui.flowOnlySelectedContracts {
-			if !eventMatchesSelectedContracts(event, selectedContracts) {
+		if onlySelected {
+			if !eventMatchesContractSet(event, selectedContracts, ui.metadata) {
 				continue
 			}
 		}
-		if ui.flowOnlyFocusedSymbol && !eventMatchesFocus(event, focusSymbol) {
+		if onlyFocused && !eventMatchesContractSet(event, focusedContracts, ui.metadata) {
 			continue
 		}
 		filtered = append(filtered, event)
@@ -2361,32 +2595,55 @@ func (ui *UI) filterFlowEvents(events []flowEvent) ([]flowEvent, flowEmptyReason
 	return filtered, flowEmptyReasonNone
 }
 
-func (ui *UI) hasValidFlowFocus(focus string) bool {
-	target := strings.TrimSpace(focus)
-	if target == "" {
-		return false
+func buildFocusedContractsSet(contracts []string, focus string, resolver contractResolver) map[string]struct{} {
+	result := make(map[string]struct{}, len(contracts))
+	focusNorm := normalizeToken(focus)
+	if focusNorm == "" {
+		return result
 	}
-	if ui.liveMarket == nil {
-		return true
+	focusSymbol := ""
+	if symbol, ok := resolveContractSymbol(focus, "", resolver); ok {
+		focusSymbol = normalizeToken(symbol)
 	}
-	return focusMatchesMarketRows(target, ui.marketRows)
+	for _, contract := range contracts {
+		key := normalizeToken(contract)
+		if key == "" {
+			continue
+		}
+		if key == focusNorm {
+			result[key] = struct{}{}
+			continue
+		}
+		contractSymbol := ""
+		if symbol, ok := resolveContractSymbol(contract, "", resolver); ok {
+			contractSymbol = normalizeToken(symbol)
+		}
+		if focusSymbol != "" && contractSymbol == focusSymbol {
+			result[key] = struct{}{}
+		}
+	}
+	return result
 }
 
-func focusMatchesMarketRows(focus string, rows []MarketRow) bool {
-	target := strings.TrimSpace(focus)
-	if target == "" {
-		return false
+func focusedContractsSource(curveContracts []string, marketRows []MarketRow) []string {
+	if len(curveContracts) > 0 {
+		return curveContracts
 	}
-	for _, row := range rows {
+	contracts := make([]string, 0, len(marketRows))
+	seen := make(map[string]struct{}, len(marketRows))
+	for _, row := range marketRows {
 		contract := strings.TrimSpace(row.Symbol)
 		if contract == "" {
 			continue
 		}
-		if matchesFocusFields(contract, "", "", target) {
-			return true
+		key := normalizeToken(contract)
+		if _, ok := seen[key]; ok {
+			continue
 		}
+		seen[key] = struct{}{}
+		contracts = append(contracts, contract)
 	}
-	return false
+	return contracts
 }
 
 func buildSelectedContractsSet(rows []MarketRow) map[string]struct{} {
@@ -2401,32 +2658,37 @@ func buildSelectedContractsSet(rows []MarketRow) map[string]struct{} {
 	return result
 }
 
-func eventMatchesSelectedContracts(event flowEvent, selectedContracts map[string]struct{}) bool {
-	for _, candidate := range selectedContractCandidates(event) {
-		if _, ok := selectedContracts[normalizeToken(candidate)]; ok {
+func eventMatchesContractSet(event flowEvent, contracts map[string]struct{}, resolver contractResolver) bool {
+	for _, candidate := range selectedContractCandidates(event, resolver) {
+		if _, ok := contracts[normalizeToken(candidate)]; ok {
 			return true
 		}
 	}
 	return false
 }
 
-func selectedContractCandidates(event flowEvent) []string {
+func selectedContractCandidates(event flowEvent, resolver contractResolver) []string {
 	candidates := make([]string, 0, 3)
+	seen := make(map[string]struct{}, 3)
 	appendIfPresent := func(value string) {
 		trimmed := strings.TrimSpace(value)
 		if trimmed == "" {
 			return
 		}
+		key := normalizeToken(trimmed)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
 		candidates = append(candidates, trimmed)
 	}
 	appendIfPresent(event.Contract)
-	appendIfPresent(event.Underlying)
-	appendIfPresent(inferOptionUnderlyingFromContract(event.Contract))
+	if underlying, ok := resolveOptionUnderlying(event.Contract, event.Underlying, resolver); ok {
+		appendIfPresent(underlying)
+	} else {
+		appendIfPresent(event.Underlying)
+	}
 	return candidates
-}
-
-func eventMatchesFocus(event flowEvent, focus string) bool {
-	return matchesFocusFields(event.Contract, event.Underlying, event.Symbol, focus)
 }
 
 func formatFlowWindow(startTS, endTS int64) string {
@@ -2817,11 +3079,11 @@ func percentile95(values []float64) float64 {
 }
 
 func toFlowEvent(row map[string]any) (flowEvent, bool) {
-	event, _, ok := toFlowEventWithContext(row, optionFrame{}, nil)
+	event, _, ok := toFlowEventWithContext(row, optionFrame{}, nil, nil)
 	return event, ok
 }
 
-func toFlowEventWithContext(row map[string]any, prevFrame optionFrame, optionRow map[string]any) (flowEvent, optionFrame, bool) {
+func toFlowEventWithContext(row map[string]any, prevFrame optionFrame, optionRow map[string]any, resolver contractResolver) (flowEvent, optionFrame, bool) {
 	contract := strings.TrimSpace(asString(row["ctp_contract"]))
 	if contract == "" {
 		return flowEvent{}, optionFrame{}, false
@@ -2831,7 +3093,11 @@ func toFlowEventWithContext(row map[string]any, prevFrame optionFrame, optionRow
 		cp = strings.ToLower(strings.TrimSpace(asString(optionRow["option_type"])))
 	}
 	if cp != "c" && cp != "p" {
-		cp = inferOptionTypeFromContract(contract)
+		if resolvedCP, ok := resolveOptionTypeCP(contract, resolver); ok {
+			cp = resolvedCP
+		} else {
+			cp = inferOptionTypeFromContract(contract)
+		}
 	}
 	tsMillis := flowEventTS(row)
 
@@ -3096,13 +3362,18 @@ func toFlowEventWithContext(row map[string]any, prevFrame optionFrame, optionRow
 	weightGamma := wTrigger * qGamma * gGamma
 	weightTheta := wTrigger * qTheta * gTheta
 	weightPosition := wTrigger * qPosition * gPosition
+	resolvedSymbol, _ := resolveContractSymbol(contract, firstNonEmpty(strings.TrimSpace(asString(row["symbol"])), strings.TrimSpace(asString(optionValue(optionRow, "symbol")))), resolver)
+	resolvedUnderlying, _ := resolveOptionUnderlying(contract, firstNonEmpty(strings.TrimSpace(asString(row["underlying"])), strings.TrimSpace(asString(optionValue(optionRow, "underlying")))), resolver)
+	if resolvedUnderlying == "" {
+		resolvedUnderlying = contract
+	}
 
 	event := flowEvent{
 		Key:             flowEventID(row, contract, cp, strike, hasStrike),
 		TS:              tsMillis,
 		Contract:        contract,
-		Symbol:          firstNonEmpty(strings.TrimSpace(asString(row["symbol"])), inferContractRoot(contract)),
-		Underlying:      firstNonEmpty(strings.TrimSpace(asString(row["underlying"])), strings.TrimSpace(asString(optionValue(optionRow, "underlying"))), contract),
+		Symbol:          resolvedSymbol,
+		Underlying:      resolvedUnderlying,
 		CP:              cp,
 		Strike:          strike,
 		HasStrike:       hasStrike,

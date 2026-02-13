@@ -14,6 +14,63 @@ import (
 	"github.com/danni2019/starSling/internal/router"
 )
 
+type testContractResolver struct {
+	optionUnderlying map[string]string
+	contractSymbol   map[string]string
+	optionTypeCP     map[string]string
+	inferUnderlying  map[string]string
+	inferSymbol      map[string]string
+	inferOptionType  map[string]string
+}
+
+func (r testContractResolver) ResolveOptionUnderlying(contract string) (string, bool) {
+	if r.optionUnderlying == nil {
+		return "", false
+	}
+	value, ok := r.optionUnderlying[normalizeToken(contract)]
+	return value, ok
+}
+
+func (r testContractResolver) ResolveContractSymbol(contract string) (string, bool) {
+	if r.contractSymbol == nil {
+		return "", false
+	}
+	value, ok := r.contractSymbol[normalizeToken(contract)]
+	return value, ok
+}
+
+func (r testContractResolver) ResolveOptionTypeCP(contract string) (string, bool) {
+	if r.optionTypeCP == nil {
+		return "", false
+	}
+	value, ok := r.optionTypeCP[normalizeToken(contract)]
+	return value, ok
+}
+
+func (r testContractResolver) InferOptionUnderlying(contract string) (string, bool) {
+	if r.inferUnderlying == nil {
+		return "", false
+	}
+	value, ok := r.inferUnderlying[normalizeToken(contract)]
+	return value, ok
+}
+
+func (r testContractResolver) InferContractSymbol(contract string) (string, bool) {
+	if r.inferSymbol == nil {
+		return "", false
+	}
+	value, ok := r.inferSymbol[normalizeToken(contract)]
+	return value, ok
+}
+
+func (r testContractResolver) InferOptionTypeCP(contract string) (string, bool) {
+	if r.inferOptionType == nil {
+		return "", false
+	}
+	value, ok := r.inferOptionType[normalizeToken(contract)]
+	return value, ok
+}
+
 func testClassifiableFlowEvent(key, contract, symbol, underlying string, ts int64) flowEvent {
 	return flowEvent{
 		Key:             key,
@@ -599,6 +656,32 @@ func TestRenderFlowAggregationDoesNotCreateRowsForOnlyUnclassifiableEvents(t *te
 	}
 }
 
+func TestNormalizeExclusiveFlowFilters(t *testing.T) {
+	tests := []struct {
+		name         string
+		onlySelected bool
+		onlyFocused  bool
+		wantSelected bool
+		wantFocused  bool
+	}{
+		{name: "both off", onlySelected: false, onlyFocused: false, wantSelected: false, wantFocused: false},
+		{name: "selected only", onlySelected: true, onlyFocused: false, wantSelected: true, wantFocused: false},
+		{name: "focused only", onlySelected: false, onlyFocused: true, wantSelected: false, wantFocused: true},
+		{name: "both on", onlySelected: true, onlyFocused: true, wantSelected: false, wantFocused: true},
+	}
+	for _, tc := range tests {
+		gotSelected, gotFocused := normalizeExclusiveFlowFilters(tc.onlySelected, tc.onlyFocused)
+		if gotSelected != tc.wantSelected || gotFocused != tc.wantFocused {
+			t.Fatalf("%s: normalizeExclusiveFlowFilters(%v,%v)=(%v,%v), want (%v,%v)",
+				tc.name,
+				tc.onlySelected, tc.onlyFocused,
+				gotSelected, gotFocused,
+				tc.wantSelected, tc.wantFocused,
+			)
+		}
+	}
+}
+
 func TestRenderFlowAggregationFiltersBySelectedContracts(t *testing.T) {
 	ui := &UI{
 		liveFlow:                  tview.NewTable(),
@@ -656,6 +739,7 @@ func TestRenderFlowAggregationFiltersByFocusedSymbol(t *testing.T) {
 		flowMinAnalysisSeconds: defaultFlowMinAnalysisSeconds,
 		flowOnlyFocusedSymbol:  true,
 		focusSymbol:            "ag2604",
+		lastCurveContracts:     []string{"ag2604", "ag2605"},
 		flowEvents: []flowEvent{
 			testClassifiableFlowEvent("ag-1", "ag2604C72000", "AG", "ag2604", 100000),
 			testClassifiableFlowEvent("ag-2", "ag2604C72000", "AG", "ag2604", 132000),
@@ -681,6 +765,7 @@ func TestRenderFlowAggregationFiltersByFocusedUnderlyingWhenEventLacksContext(t 
 		flowMinAnalysisSeconds: defaultFlowMinAnalysisSeconds,
 		flowOnlyFocusedSymbol:  true,
 		focusSymbol:            "cu2604",
+		lastCurveContracts:     []string{"cu2604", "cu2605"},
 		flowEvents: []flowEvent{
 			testClassifiableFlowEvent("cu-1", "cu2604C72000", "", "", 100000),
 			testClassifiableFlowEvent("cu-2", "cu2604C72000", "", "", 132000),
@@ -699,13 +784,14 @@ func TestRenderFlowAggregationFiltersByFocusedUnderlyingWhenEventLacksContext(t 
 	}
 }
 
-func TestRenderFlowAggregationFiltersByFocusedRootWhenEventSymbolMissing(t *testing.T) {
+func TestRenderFlowAggregationShowsFocusedMessageWhenCurveContractsMismatch(t *testing.T) {
 	ui := &UI{
 		liveFlow:               tview.NewTable(),
 		flowWindowSeconds:      defaultFlowWindowSeconds,
 		flowMinAnalysisSeconds: defaultFlowMinAnalysisSeconds,
 		flowOnlyFocusedSymbol:  true,
-		focusSymbol:            "CU",
+		focusSymbol:            "cu2604",
+		lastCurveContracts:     []string{"ag2604", "ag2605"},
 		flowEvents: []flowEvent{
 			testClassifiableFlowEvent("cu-1", "cu2604C72000", "", "", 100000),
 			testClassifiableFlowEvent("cu-2", "cu2604C72000", "", "", 132000),
@@ -716,15 +802,41 @@ func TestRenderFlowAggregationFiltersByFocusedRootWhenEventSymbolMissing(t *test
 
 	ui.renderFlowAggregation()
 
-	if got := ui.liveFlow.GetRowCount(); got != 2 {
-		t.Fatalf("expected one aggregated row after focused-root fallback matching, got row count %d", got)
-	}
-	if got := strings.TrimSpace(ui.liveFlow.GetCell(1, 0).Text); got != "cu2604C72000" {
-		t.Fatalf("expected only cu2604 option row after focused-root fallback matching, got %q", got)
+	if got := strings.TrimSpace(ui.liveFlow.GetCell(1, 0).Text); got != "Currently no focused symbol" {
+		t.Fatalf("expected focused-symbol message when curve contracts mismatch focus, got %q", got)
 	}
 }
 
-func TestRenderFlowAggregationAppliesSelectedAndFocusedIntersection(t *testing.T) {
+func TestRenderFlowAggregationFocusedFilterFallsBackToMarketContracts(t *testing.T) {
+	ui := &UI{
+		liveFlow:               tview.NewTable(),
+		flowWindowSeconds:      defaultFlowWindowSeconds,
+		flowMinAnalysisSeconds: defaultFlowMinAnalysisSeconds,
+		flowOnlyFocusedSymbol:  true,
+		focusSymbol:            "cu2604",
+		marketRows: []MarketRow{
+			{Symbol: "cu2604"},
+			{Symbol: "ag2604"},
+		},
+		flowEvents: []flowEvent{
+			testClassifiableFlowEvent("cu-1", "cu2604C72000", "CU", "cu2604", 100000),
+			testClassifiableFlowEvent("cu-2", "cu2604C72000", "CU", "cu2604", 132000),
+			testClassifiableFlowEvent("ag-1", "ag2604C72000", "AG", "ag2604", 101000),
+			testClassifiableFlowEvent("ag-2", "ag2604C72000", "AG", "ag2604", 133000),
+		},
+	}
+
+	ui.renderFlowAggregation()
+
+	if got := ui.liveFlow.GetRowCount(); got != 2 {
+		t.Fatalf("expected one aggregated row after market-contract fallback matching, got row count %d", got)
+	}
+	if got := strings.TrimSpace(ui.liveFlow.GetCell(1, 0).Text); got != "cu2604" {
+		t.Fatalf("expected only cu2604 row after market-contract fallback matching, got %q", got)
+	}
+}
+
+func TestRenderFlowAggregationBothEnabledUsesFocusedFilter(t *testing.T) {
 	ui := &UI{
 		liveFlow:                  tview.NewTable(),
 		flowWindowSeconds:         defaultFlowWindowSeconds,
@@ -732,6 +844,7 @@ func TestRenderFlowAggregationAppliesSelectedAndFocusedIntersection(t *testing.T
 		flowOnlySelectedContracts: true,
 		flowOnlyFocusedSymbol:     true,
 		focusSymbol:               "ag2604",
+		lastCurveContracts:        []string{"ag2604", "ag2605"},
 		marketRows:                []MarketRow{{Symbol: "cu2604C72000"}},
 		flowEvents: []flowEvent{
 			testClassifiableFlowEvent("ag-1", "ag2604C72000", "AG", "ag2604", 100000),
@@ -743,8 +856,71 @@ func TestRenderFlowAggregationAppliesSelectedAndFocusedIntersection(t *testing.T
 
 	ui.renderFlowAggregation()
 
-	if got := strings.TrimSpace(ui.liveFlow.GetCell(1, 0).Text); got != "Waiting for unusual events..." {
-		t.Fatalf("expected intersection filtering to produce no rows, got %q", got)
+	if got := ui.liveFlow.GetRowCount(); got != 2 {
+		t.Fatalf("expected focused filter to win when both enabled, got row count %d", got)
+	}
+	if got := strings.TrimSpace(ui.liveFlow.GetCell(1, 0).Text); got != "ag2604" {
+		t.Fatalf("expected focused-only result ag2604 when both enabled, got %q", got)
+	}
+}
+
+func TestRenderFlowAggregationBothEnabledIgnoresSelectedMismatch(t *testing.T) {
+	ui := &UI{
+		liveFlow:                  tview.NewTable(),
+		flowWindowSeconds:         defaultFlowWindowSeconds,
+		flowMinAnalysisSeconds:    defaultFlowMinAnalysisSeconds,
+		flowOnlySelectedContracts: true,
+		flowOnlyFocusedSymbol:     true,
+		focusSymbol:               "lc2605",
+		lastCurveContracts:        []string{"lc2603", "lc2604", "lc2605", "lc2606"},
+		marketRows: []MarketRow{
+			{Symbol: "sc2604"},
+		},
+		flowEvents: []flowEvent{
+			testClassifiableFlowEvent("lc2605-a", "lc2605C11000", "LC", "lc2605", 100000),
+			testClassifiableFlowEvent("lc2605-b", "lc2605P11000", "LC", "lc2605", 132000),
+			testClassifiableFlowEvent("lc2604-a", "lc2604C11000", "LC", "lc2604", 101000),
+			testClassifiableFlowEvent("lc2604-b", "lc2604P11000", "LC", "lc2604", 133000),
+			testClassifiableFlowEvent("sc2604-a", "sc2604C500", "SC", "sc2604", 102000),
+			testClassifiableFlowEvent("sc2604-b", "sc2604P500", "SC", "sc2604", 134000),
+		},
+	}
+
+	ui.renderFlowAggregation()
+
+	if got := ui.liveFlow.GetRowCount(); got != 3 {
+		t.Fatalf("expected focused filter rows (lc2604/lc2605) when both enabled, got row count %d", got)
+	}
+	rowA := strings.TrimSpace(ui.liveFlow.GetCell(1, 0).Text)
+	rowB := strings.TrimSpace(ui.liveFlow.GetCell(2, 0).Text)
+	if !(rowA == "lc2604" || rowA == "lc2605") || !(rowB == "lc2604" || rowB == "lc2605") || rowA == rowB {
+		t.Fatalf("expected focused rows lc2604 and lc2605, got %q and %q", rowA, rowB)
+	}
+}
+
+func TestRenderFlowAggregationFocusedFilterExcludesForeignSymbolContracts(t *testing.T) {
+	ui := &UI{
+		liveFlow:               tview.NewTable(),
+		flowWindowSeconds:      defaultFlowWindowSeconds,
+		flowMinAnalysisSeconds: defaultFlowMinAnalysisSeconds,
+		flowOnlyFocusedSymbol:  true,
+		focusSymbol:            "lc2605",
+		lastCurveContracts:     []string{"lc2603", "lc2604", "lc2605", "sc2604"},
+		flowEvents: []flowEvent{
+			testClassifiableFlowEvent("lc-a", "lc2605C11000", "LC", "lc2605", 100000),
+			testClassifiableFlowEvent("lc-b", "lc2605P11000", "LC", "lc2605", 132000),
+			testClassifiableFlowEvent("sc-a", "sc2604C500", "SC", "sc2604", 101000),
+			testClassifiableFlowEvent("sc-b", "sc2604P500", "SC", "sc2604", 133000),
+		},
+	}
+
+	ui.renderFlowAggregation()
+
+	if got := ui.liveFlow.GetRowCount(); got != 2 {
+		t.Fatalf("expected only focused-symbol row after filtering foreign symbol contracts, got row count %d", got)
+	}
+	if got := strings.TrimSpace(ui.liveFlow.GetCell(1, 0).Text); got != "lc2605" {
+		t.Fatalf("expected focused-symbol filter to keep lc2605 only, got %q", got)
 	}
 }
 
@@ -845,6 +1021,7 @@ func TestRenderFlowAggregationCollectingClearsPreviousRows(t *testing.T) {
 
 	ui.flowOnlyFocusedSymbol = true
 	ui.focusSymbol = "ag2604"
+	ui.lastCurveContracts = []string{"ag2604", "ag2605"}
 	ui.renderFlowAggregation()
 
 	if title := ui.liveFlow.GetTitle(); !strings.Contains(title, "collecting") {
@@ -863,6 +1040,7 @@ func TestEnsureFocusSymbolRerendersFlowForFocusedFilter(t *testing.T) {
 		flowMinAnalysisSeconds: defaultFlowMinAnalysisSeconds,
 		flowOnlyFocusedSymbol:  true,
 		focusSymbol:            "cu2604",
+		lastCurveContracts:     []string{"ag2604", "ag2605"},
 		marketRows: []MarketRow{
 			{Symbol: "ag2604"},
 		},
@@ -909,7 +1087,7 @@ func TestRenderOptionsPanelShowsFullChainWithoutTruncation(t *testing.T) {
 			"tte":          30.0,
 		})
 	}
-	panel := renderOptionsPanel(rows, "cu2604", optionRenderFilter{})
+	panel := renderOptionsPanel(nil, rows, "cu2604", optionRenderFilter{})
 	if !strings.Contains(panel, "Rows: 30") {
 		t.Fatalf("expected full row count in panel, got: %s", panel)
 	}
@@ -932,6 +1110,8 @@ func TestInferOptionTypeFromContract(t *testing.T) {
 		{contract: "CU2604P72000", want: "p"},
 		{contract: "CU2604C72000", want: "c"},
 		{contract: "cu2604p72000", want: "p"},
+		{contract: "MO2604-C-8000", want: "c"},
+		{contract: "MO2604-P-8000", want: "p"},
 		{contract: "C2406", want: ""},
 		{contract: "", want: ""},
 	}
@@ -949,6 +1129,8 @@ func TestInferOptionUnderlyingFromContract(t *testing.T) {
 	}{
 		{contract: "CU2604P72000", want: "CU2604"},
 		{contract: "cu2604c72000", want: "cu2604"},
+		{contract: "MO2604-C-8000", want: "MO2604"},
+		{contract: "MO2604-P-8000", want: "MO2604"},
 		{contract: "C2406", want: ""},
 		{contract: "", want: ""},
 	}
@@ -959,8 +1141,46 @@ func TestInferOptionUnderlyingFromContract(t *testing.T) {
 	}
 }
 
+func TestResolveOptionUnderlyingPrefersExistingWhenResolverNil(t *testing.T) {
+	got, ok := resolveOptionUnderlying("MO2605-C-1234", "IM2605", nil)
+	if !ok || got != "IM2605" {
+		t.Fatalf("resolveOptionUnderlying() = (%q,%v), want (IM2605,true)", got, ok)
+	}
+}
+
+func TestResolveOptionUnderlyingPrefersExistingOverResolverInfer(t *testing.T) {
+	resolver := testContractResolver{
+		inferUnderlying: map[string]string{
+			"mo2605-c-1234": "MO2605",
+		},
+	}
+	got, ok := resolveOptionUnderlying("MO2605-C-1234", "IM2605", resolver)
+	if !ok || got != "IM2605" {
+		t.Fatalf("resolveOptionUnderlying() = (%q,%v), want (IM2605,true)", got, ok)
+	}
+}
+
+func TestResolveContractSymbolPrefersExistingWhenResolverNil(t *testing.T) {
+	got, ok := resolveContractSymbol("MO2605-C-1234", "IM", nil)
+	if !ok || got != "IM" {
+		t.Fatalf("resolveContractSymbol() = (%q,%v), want (IM,true)", got, ok)
+	}
+}
+
+func TestResolveContractSymbolPrefersExistingOverResolverInfer(t *testing.T) {
+	resolver := testContractResolver{
+		inferSymbol: map[string]string{
+			"mo2605-c-1234": "MO",
+		},
+	}
+	got, ok := resolveContractSymbol("MO2605-C-1234", "IM", resolver)
+	if !ok || got != "IM" {
+		t.Fatalf("resolveContractSymbol() = (%q,%v), want (IM,true)", got, ok)
+	}
+}
+
 func TestRenderOptionsPanelInfersPutFromContract(t *testing.T) {
-	panel := renderOptionsPanel([]map[string]any{
+	panel := renderOptionsPanel(nil, []map[string]any{
 		{
 			"ctp_contract": "CU2604P72000",
 			"underlying":   "CU2604",
@@ -977,7 +1197,7 @@ func TestRenderOptionsPanelInfersPutFromContract(t *testing.T) {
 }
 
 func TestRenderOptionsPanelRequiresFocus(t *testing.T) {
-	panel := renderOptionsPanel([]map[string]any{
+	panel := renderOptionsPanel(nil, []map[string]any{
 		{
 			"ctp_contract": "CU2604P72000",
 			"underlying":   "CU2604",
@@ -1013,12 +1233,33 @@ func TestRenderOptionsPanelFiltersToFocusChain(t *testing.T) {
 			"volume":       80.0,
 		},
 	}
-	panel := renderOptionsPanel(rows, "CU2604", optionRenderFilter{})
+	panel := renderOptionsPanel(nil, rows, "CU2604", optionRenderFilter{})
 	if strings.Contains(panel, "19000") {
 		t.Fatalf("expected non-focused chain to be excluded, got: %s", panel)
 	}
 	if !strings.Contains(panel, "72000") {
 		t.Fatalf("expected focused chain to remain, got: %s", panel)
+	}
+}
+
+func TestFilterOptionsRowsWithResolverUsesMetadataUnderlying(t *testing.T) {
+	rows := []map[string]any{
+		{
+			"ctp_contract": "MO2604-C-8000",
+			"underlying":   "MO2604",
+			"symbol":       "MO",
+			"option_type":  "c",
+			"strike":       8000.0,
+		},
+	}
+	resolver := testContractResolver{
+		optionUnderlying: map[string]string{
+			"mo2604-c-8000": "IM2604",
+		},
+	}
+	filtered := filterOptionsRowsWithResolver(rows, "IM2604", resolver)
+	if len(filtered) != 1 {
+		t.Fatalf("expected metadata-based focus match, got %d rows", len(filtered))
 	}
 }
 
@@ -1999,6 +2240,42 @@ func TestToFlowEventKeepsOIEventWhenPriceIsZero(t *testing.T) {
 	}
 }
 
+func TestToFlowEventWithContextPrefersMetadataMappings(t *testing.T) {
+	row := map[string]any{
+		"ts":           float64(1738789200000),
+		"ctp_contract": "MO2604-C-8000",
+		"cp":           "",
+		"price":        120.0,
+		"turnover_chg": 1000.0,
+		"tag":          "TURNOVER",
+	}
+	resolver := testContractResolver{
+		optionUnderlying: map[string]string{
+			"mo2604-c-8000": "IM2604",
+		},
+		contractSymbol: map[string]string{
+			"mo2604-c-8000": "MO",
+		},
+		optionTypeCP: map[string]string{
+			"mo2604-c-8000": "c",
+		},
+	}
+
+	event, _, ok := toFlowEventWithContext(row, optionFrame{}, nil, resolver)
+	if !ok {
+		t.Fatalf("expected row to convert into flow event")
+	}
+	if event.Underlying != "IM2604" {
+		t.Fatalf("expected metadata underlying IM2604, got %q", event.Underlying)
+	}
+	if event.Symbol != "MO" {
+		t.Fatalf("expected metadata symbol MO, got %q", event.Symbol)
+	}
+	if event.CP != "c" {
+		t.Fatalf("expected metadata cp c, got %q", event.CP)
+	}
+}
+
 func TestToFlowEventWithContextOIFallbackSkipsNewerPrevPrice(t *testing.T) {
 	prevFrame := optionFrame{
 		TS:      2000,
@@ -2014,7 +2291,7 @@ func TestToFlowEventWithContextOIFallbackSkipsNewerPrevPrice(t *testing.T) {
 		"tag":          "OI",
 	}
 
-	event, _, ok := toFlowEventWithContext(row, prevFrame, nil)
+	event, _, ok := toFlowEventWithContext(row, prevFrame, nil, nil)
 	if !ok {
 		t.Fatalf("expected replayed OI row to convert into flow event")
 	}
@@ -2037,7 +2314,7 @@ func TestToFlowEventWithContextOIFallbackIgnoresCrossedBook(t *testing.T) {
 		"tag":          "OI",
 	}
 
-	event, _, ok := toFlowEventWithContext(row, optionFrame{}, nil)
+	event, _, ok := toFlowEventWithContext(row, optionFrame{}, nil, nil)
 	if !ok {
 		t.Fatalf("expected crossed-book OI row to convert into flow event")
 	}
@@ -2073,7 +2350,7 @@ func TestToFlowEventWithContextCrossedBooksDoNotDriveOrderbookChange(t *testing.
 		"tag":          "TURNOVER",
 	}
 
-	event, _, ok := toFlowEventWithContext(row, prevFrame, nil)
+	event, _, ok := toFlowEventWithContext(row, prevFrame, nil, nil)
 	if !ok {
 		t.Fatalf("expected crossed-book turnover row to convert into flow event")
 	}
@@ -2139,7 +2416,7 @@ func TestToFlowEventWithContextDowngradesZeroDepthBookQuality(t *testing.T) {
 		"tag":          "TURNOVER",
 	}
 
-	event, _, ok := toFlowEventWithContext(row, prevFrame, nil)
+	event, _, ok := toFlowEventWithContext(row, prevFrame, nil, nil)
 	if !ok {
 		t.Fatalf("expected row to convert into flow event")
 	}
@@ -2176,7 +2453,7 @@ func TestToFlowEventWithContextDowngradesCrossedBookQuality(t *testing.T) {
 		"tag":          "TURNOVER",
 	}
 
-	event, _, ok := toFlowEventWithContext(row, prevFrame, nil)
+	event, _, ok := toFlowEventWithContext(row, prevFrame, nil, nil)
 	if !ok {
 		t.Fatalf("expected row to convert into flow event")
 	}
