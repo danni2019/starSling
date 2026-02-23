@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/gdamore/tcell/v2"
@@ -9,6 +10,13 @@ import (
 )
 
 func (ui *UI) buildLiveScreen() tview.Primitive {
+	ui.liveOverview = tview.NewTable()
+	ui.liveOverview.SetSelectable(true, true)
+	ui.liveOverview.SetFixed(1, 0)
+	ui.liveOverview.SetSelectedStyle(tcell.StyleDefault.Foreground(colorMenuSelected).Background(colorHighlight))
+	ui.liveOverview.SetBorder(true).SetTitle("Overview (symbol | futures + options gamma buckets)")
+	ui.liveOverview.SetBorderColor(colorBorder).SetTitleColor(colorBorder)
+
 	ui.liveMarket = tview.NewTable()
 	ui.liveMarket.SetSelectable(true, false)
 	ui.liveMarket.SetFixed(1, 0)
@@ -74,8 +82,12 @@ func (ui *UI) buildLiveScreen() tview.Primitive {
 	ui.liveTrades.SetBorder(true).SetTitle("Unusual option volume (newest at top)")
 	ui.liveTrades.SetBorderColor(colorBorder).SetTitleColor(colorBorder)
 
+	watchlistStack := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(ui.liveOverview, 0, 1, true).
+		AddItem(ui.liveMarket, 0, 1, false)
+
 	left := tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(ui.liveMarket, 0, 7, true).
+		AddItem(watchlistStack, 0, 7, true).
 		AddItem(ui.liveFlow, 0, 3, false)
 
 	right := tview.NewFlex().SetDirection(tview.FlexRow).
@@ -93,6 +105,7 @@ func (ui *UI) buildLiveScreen() tview.Primitive {
 	root.SetBackgroundColor(colorBackground)
 
 	ui.focusables = []tview.Primitive{
+		ui.liveOverview,
 		ui.liveMarket,
 		ui.liveCurve,
 		ui.liveOpts,
@@ -100,6 +113,7 @@ func (ui *UI) buildLiveScreen() tview.Primitive {
 		ui.liveFlow,
 	}
 	ui.focusIndex = 0
+	fillOverviewTable(ui.liveOverview, nil)
 	fillMarketTable(ui.liveMarket, nil)
 	fillTradesTable(ui.liveTrades, nil)
 	fillFlowTable(ui.liveFlow, nil)
@@ -110,16 +124,66 @@ func (ui *UI) buildLiveScreen() tview.Primitive {
 	return root
 }
 
-func (ui *UI) updateLiveData() {
-	if ui.liveMarket == nil {
+func fillOverviewTable(table *tview.Table, rows []overviewFuturesDisplayRow) {
+	selectedRow, selectedCol := table.GetSelection()
+	table.Clear()
+	headers := []string{
+		"SYMBOL",
+		"OI_CHG%",
+		"TURNOVER",
+		"C_GAMMA_INV",
+		"C_GAMMA_FNT",
+		"C_GAMMA_MID",
+		"C_GAMMA_BACK",
+		"P_GAMMA_INV",
+		"P_GAMMA_FNT",
+		"P_GAMMA_MID",
+		"P_GAMMA_BACK",
+	}
+	for col, label := range headers {
+		cell := tview.NewTableCell(padTableCell(label)).
+			SetTextColor(colorTableHeader).
+			SetAlign(tview.AlignLeft).
+			SetSelectable(false)
+		table.SetCell(0, col, cell)
+	}
+	if len(rows) == 0 {
+		table.SetCell(1, 0, tview.NewTableCell("Waiting for overview...").
+			SetTextColor(colorMuted).
+			SetSelectable(false))
 		return
 	}
-	fillMarketTable(ui.liveMarket, ui.data.MarketRows)
-	fillTradesTable(ui.liveTrades, ui.data.Trades)
-	fillFlowTable(ui.liveFlow, nil)
-	if ui.liveLog != nil {
-		fillLog(ui.liveLog, ui.data.Logs)
+	for i, row := range rows {
+		values := []string{
+			row.Symbol,
+			formatOptionalFloat(row.OIChgPct*100, row.HasOIChgPct) + percentSuffix(row.HasOIChgPct),
+			formatSciOptional(row.Turnover, row.HasTurnover),
+			formatSciOptional(row.CGammaInv, row.HasCGammaInv),
+			formatSciOptional(row.CGammaFnt, row.HasCGammaFnt),
+			formatSciOptional(row.CGammaMid, row.HasCGammaMid),
+			formatSciOptional(row.CGammaBack, row.HasCGammaBack),
+			formatSciOptional(row.PGammaInv, row.HasPGammaInv),
+			formatSciOptional(row.PGammaFnt, row.HasPGammaFnt),
+			formatSciOptional(row.PGammaMid, row.HasPGammaMid),
+			formatSciOptional(row.PGammaBack, row.HasPGammaBack),
+		}
+		for col, value := range values {
+			cell := tview.NewTableCell(padTableCell(value)).
+				SetTextColor(colorTableRow).
+				SetAlign(tview.AlignLeft)
+			table.SetCell(i+1, col, cell)
+		}
 	}
+	if selectedCol < 0 {
+		selectedCol = 0
+	}
+	if selectedCol >= len(headers) {
+		selectedCol = len(headers) - 1
+	}
+	if selectedRow <= 0 || selectedRow > len(rows) {
+		selectedRow = 1
+	}
+	table.Select(selectedRow, selectedCol)
 }
 
 func fillMarketTable(table *tview.Table, rows []MarketRow) {
@@ -258,22 +322,16 @@ func padTableCell(value string) string {
 	return text
 }
 
-func fillLog(view *tview.TextView, logs []LogLine) {
-	lines := make([]string, 0, len(logs))
-	for _, line := range logs {
-		lines = append(lines, fmt.Sprintf("[%s] %s", line.Time, line.Message))
+func percentSuffix(ok bool) string {
+	if !ok {
+		return ""
 	}
-	view.SetText(strings.Join(lines, "\n"))
+	return "%"
 }
 
-func renderChartPlaceholder() string {
-	return strings.Join([]string{
-		"  . . . . . . . . . .",
-		" .               .  .",
-		".                  . ",
-		" .                .  ",
-		"  . . . . . . . . .  ",
-		"",
-		"placeholder chart - filled by python later",
-	}, "\n")
+func formatSciOptional(value float64, ok bool) string {
+	if !ok {
+		return "-"
+	}
+	return strconv.FormatFloat(value, 'e', 2, 64)
 }

@@ -7,12 +7,23 @@
 - 实时行情接入（OpenCTP -> Python `live_md`）
 - 本地路由缓存与 JSON-RPC 通信（Go `router`）
 - 终端 UI 多面板展示（市场/波动率曲线/期权链/异常成交/Flow 聚合）
+- 左上 symbol-level overview 看板（期货热度 + 期权 gamma inventory 分桶）
 - 两类实时派生分析 worker（`options_worker`、`unusual_worker`）
 - UI 交互筛选、阈值配置、焦点合约联动
 
 ## MVP 功能概览
 
-### 1. 实时市场面板（左上）
+### 1. 实时总览与市场面板（左上）
+
+- 左上区域顶部新增 symbol-level overview 单表（按 `symbol` 合并展示）
+- 期货汇总列：`OI_CHG%`、`TURNOVER`
+- 期权汇总列：`C_GAMMA_INV / C_GAMMA_FNT / C_GAMMA_MID / C_GAMMA_BACK` 与 `P_*`
+- `gamma inventory` 采用 `sum(gamma * open_interest * multiplier * S^2)`，并按到期日分桶：
+  - `front <= 30d`
+  - `mid (30, 90]d`
+  - `back > 90d`
+- overview `Enter` 设置支持：按 `oi_chg/turnover` 升降序排序、`Option Availability` 过滤
+- overview 数值格式：`OI_CHG%` 保持百分比，其余数值统一科学计数法
 
 - 展示期货主行情字段：`LAST/CHG/BID/ASK/VOL/TURNOVER/OI` 等
 - 支持排序（升降序切换）
@@ -43,6 +54,7 @@
 - 本地 Python 运行时引导脚本（`scripts/bootstrap_python.sh`）
 - 语音播报（可选，依赖 `say`/`espeak`/`spd-say`）
 - Metadata 拉取与缓存（合约、交易时段等）
+- 已清理不参与当前构建的历史 TUI 原型/占位代码，降低维护成本
 
 ## 系统结构
 
@@ -155,4 +167,3 @@ STARSLING_INTERNAL_DEBUG_UI=1 go run ./cmd/starsling
 - 暂未实现历史数据持久化与回放回测
 - 策略注册与 session detector 仍是占位能力
 - 风险控制仍以展示与人工决策为主
-

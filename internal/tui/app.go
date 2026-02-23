@@ -41,6 +41,7 @@ const (
 const defaultOptionsDeltaAbsMin = 0.25
 const defaultOptionsDeltaAbsMax = 0.5
 const unifiedColumnWidth = 8
+const defaultOverviewSortBy = "turnover"
 const defaultFlowWindowSeconds = 120
 const defaultFlowMinAnalysisSeconds = 30
 const maxVoiceQueueSize = 64
@@ -77,18 +78,19 @@ type UI struct {
 	rpcClient  *ipc.Client
 	metadata   *metadata.ContractMappings
 
-	screenMu   sync.RWMutex
-	screen     screen
-	curveView  *tview.TextView
-	titleView  *tview.TextView
-	divider    *tview.TextView
-	menu       *tview.List
-	liveMarket *tview.Table
-	liveLog    *tview.TextView
-	liveCurve  *tview.TextView
-	liveOpts   *tview.TextView
-	liveTrades *tview.Table
-	liveFlow   *tview.Table
+	screenMu     sync.RWMutex
+	screen       screen
+	curveView    *tview.TextView
+	titleView    *tview.TextView
+	divider      *tview.TextView
+	menu         *tview.List
+	liveOverview *tview.Table
+	liveMarket   *tview.Table
+	liveLog      *tview.TextView
+	liveCurve    *tview.TextView
+	liveOpts     *tview.TextView
+	liveTrades   *tview.Table
+	liveFlow     *tview.Table
 
 	focusables []tview.Primitive
 	focusIndex int
@@ -115,7 +117,6 @@ type UI struct {
 	configInputPass   *tview.InputField
 	configNameInput   *tview.InputField
 
-	data   MockData
 	ticker *time.Ticker
 
 	liveProc      *live.Process
@@ -127,6 +128,12 @@ type UI struct {
 
 	lastMarketSeq             int64
 	lastMarketStale           bool
+	lastOverviewSeq           int64
+	lastOverviewStale         bool
+	overviewRows              []router.OverviewRow
+	overviewSortBy            string
+	overviewSortAsc           bool
+	overviewRequireOptions    bool
 	marketSortBy              string
 	marketSortAsc             bool
 	marketRawRows             []map[string]any
@@ -190,11 +197,13 @@ func newUI(routerAddr string, logger *slog.Logger) *UI {
 	ui := &UI{
 		app:                     tview.NewApplication(),
 		pages:                   tview.NewPages(),
-		data:                    mockData(),
 		logger:                  logger,
 		routerAddr:              strings.TrimSpace(routerAddr),
 		metadata:                mappings,
 		screen:                  screenMain,
+		overviewSortBy:          defaultOverviewSortBy,
+		overviewSortAsc:         false,
+		overviewRequireOptions:  false,
 		marketSortBy:            "vol",
 		marketSortAsc:           false,
 		unusualChgThreshold:     100000.0,
@@ -280,14 +289,28 @@ func (ui *UI) handleLiveKeys(event *tcell.EventKey) *tcell.EventKey {
 	case tcell.KeyEsc:
 		ui.setScreen(screenMain)
 		return nil
-	case tcell.KeyTab, tcell.KeyRight:
+	case tcell.KeyTab:
 		ui.cycleFocus(1)
 		return nil
-	case tcell.KeyBacktab, tcell.KeyLeft:
+	case tcell.KeyBacktab:
+		ui.cycleFocus(-1)
+		return nil
+	case tcell.KeyRight:
+		if ui.app.GetFocus() == ui.liveOverview {
+			return event
+		}
+		ui.cycleFocus(1)
+		return nil
+	case tcell.KeyLeft:
+		if ui.app.GetFocus() == ui.liveOverview {
+			return event
+		}
 		ui.cycleFocus(-1)
 		return nil
 	case tcell.KeyEnter:
-		if ui.app.GetFocus() == ui.liveMarket {
+		if ui.app.GetFocus() == ui.liveOverview {
+			ui.openOverviewSettings()
+		} else if ui.app.GetFocus() == ui.liveMarket {
 			ui.openMarketFilter()
 		} else if ui.app.GetFocus() == ui.liveOpts {
 			ui.openOptionsFilter()
@@ -346,6 +369,79 @@ func (ui *UI) setFocus(index int) {
 		setBorderColor(item, color)
 	}
 	ui.app.SetFocus(ui.focusables[index])
+}
+
+func (ui *UI) openOverviewSettings() {
+	ui.setCurrentScreen(screenDrilldown)
+
+	sortOptions := []string{"turnover", "oi_chg"}
+	sortIdx := indexOfFold(sortOptions, ui.overviewSortBy)
+	if sortIdx < 0 {
+		sortIdx = 0
+	}
+	selectedSortBy := sortOptions[sortIdx]
+
+	orderOptions := []string{"desc", "asc"}
+	selectedOrder := "desc"
+	if ui.overviewSortAsc {
+		selectedOrder = "asc"
+	}
+	orderIdx := indexOfFold(orderOptions, selectedOrder)
+	if orderIdx < 0 {
+		orderIdx = 0
+	}
+
+	sortDropDown := tview.NewDropDown().
+		SetLabel("Sort By: ").
+		SetOptions(sortOptions, func(text string, _ int) {
+			if strings.TrimSpace(text) != "" {
+				selectedSortBy = text
+			}
+		})
+	sortDropDown.SetCurrentOption(sortIdx)
+
+	orderDropDown := tview.NewDropDown().
+		SetLabel("Order: ").
+		SetOptions(orderOptions, func(text string, _ int) {
+			if strings.TrimSpace(text) != "" {
+				selectedOrder = text
+			}
+		})
+	orderDropDown.SetCurrentOption(orderIdx)
+
+	optionAvailability := tview.NewCheckbox().
+		SetLabel("Option Availability").
+		SetChecked(ui.overviewRequireOptions)
+
+	form := tview.NewForm().
+		AddFormItem(sortDropDown).
+		AddFormItem(orderDropDown).
+		AddFormItem(optionAvailability)
+	form.SetBorder(true).SetTitle("Overview settings")
+	form.SetBorderColor(colorBorder).SetTitleColor(colorBorder)
+	form.SetBackgroundColor(colorBackground)
+	form.SetFieldBackgroundColor(colorBackground)
+	form.SetFieldTextColor(colorTableRow)
+	form.SetButtonBackgroundColor(colorHighlight)
+	form.SetButtonTextColor(colorMenuSelected)
+
+	form.AddButton("Apply", func() {
+		sortBy := strings.TrimSpace(strings.ToLower(selectedSortBy))
+		if sortBy != "oi_chg" && sortBy != "turnover" {
+			sortBy = defaultOverviewSortBy
+		}
+		ui.overviewSortBy = sortBy
+		ui.overviewSortAsc = strings.EqualFold(strings.TrimSpace(selectedOrder), "asc")
+		ui.overviewRequireOptions = optionAvailability.IsChecked()
+		ui.renderOverviewPanels()
+		ui.closeDrilldown()
+	})
+	form.AddButton("Cancel", func() {
+		ui.closeDrilldown()
+	})
+
+	ui.pages.AddPage(string(screenDrilldown), centerModal(form, 58, 11), true, true)
+	ui.app.SetFocus(form)
 }
 
 func (ui *UI) openMarketFilter() {
@@ -795,22 +891,6 @@ func (ui *UI) openOptionsFilter() {
 	ui.app.SetFocus(form)
 }
 
-func (ui *UI) openDrilldown() {
-	ui.setCurrentScreen(screenDrilldown)
-	modal := tview.NewModal().
-		SetText("Drilldown (placeholder)").
-		AddButtons([]string{"Back"}).
-		SetDoneFunc(func(_ int, _ string) {
-			ui.closeDrilldown()
-		})
-	modal.SetBackgroundColor(colorBackground)
-	modal.SetTextColor(colorAccent)
-	modal.SetButtonBackgroundColor(colorHighlight)
-	modal.SetButtonTextColor(colorMenuSelected)
-	ui.pages.AddPage(string(screenDrilldown), modal, true, true)
-	ui.app.SetFocus(modal)
-}
-
 func (ui *UI) closeDrilldown() {
 	ui.pages.RemovePage(string(screenDrilldown))
 	ui.setCurrentScreen(screenLive)
@@ -859,12 +939,43 @@ func (ui *UI) pollLiveSnapshot() {
 			ui.appendLiveLogLine("router poll failed: " + err.Error())
 			return
 		}
+		ui.applyOverviewSnapshot(view.Overview)
 		ui.applyMarketSnapshot(view.Market)
 		ui.applyCurveSnapshot(view.Curve)
 		ui.applyOptionsSnapshot(view.Options)
 		ui.applyUnusualSnapshot(view.Unusual)
 		ui.applyRouterLogs(view.Logs)
 	})
+}
+
+func (ui *UI) applyOverviewSnapshot(snapshot router.OverviewSnapshot) {
+	if ui.liveOverview == nil {
+		return
+	}
+	if snapshot.Seq == 0 {
+		if ui.lastOverviewSeq == 0 && len(ui.overviewRows) == 0 {
+			return
+		}
+		ui.overviewRows = nil
+		ui.lastOverviewSeq = 0
+		ui.lastOverviewStale = false
+		ui.renderOverviewPanels()
+		return
+	}
+	seqChanged := snapshot.Seq != ui.lastOverviewSeq
+	staleChanged := snapshot.Stale != ui.lastOverviewStale
+	if !seqChanged && !staleChanged {
+		return
+	}
+	if seqChanged {
+		ui.overviewRows = snapshot.Rows
+		ui.renderOverviewPanels()
+		ui.lastOverviewSeq = snapshot.Seq
+	}
+	if staleChanged && snapshot.Stale {
+		ui.appendLiveLogLine("overview snapshot stale")
+	}
+	ui.lastOverviewStale = snapshot.Stale
 }
 
 func (ui *UI) applyMarketSnapshot(snapshot router.MarketSnapshot) {
@@ -1087,6 +1198,161 @@ func (ui *UI) applyRouterLogs(snapshot router.LogSnapshot) {
 		}
 		ui.appendLiveLogLineAt(msg, item.TS)
 	}
+}
+
+type overviewFuturesDisplayRow struct {
+	Symbol string
+
+	OIChgPct    float64
+	HasOIChgPct bool
+	Turnover    float64
+	HasTurnover bool
+
+	CGammaInv     float64
+	HasCGammaInv  bool
+	CGammaFnt     float64
+	HasCGammaFnt  bool
+	CGammaMid     float64
+	HasCGammaMid  bool
+	CGammaBack    float64
+	HasCGammaBack bool
+
+	PGammaInv     float64
+	HasPGammaInv  bool
+	PGammaFnt     float64
+	HasPGammaFnt  bool
+	PGammaMid     float64
+	HasPGammaMid  bool
+	PGammaBack    float64
+	HasPGammaBack bool
+}
+
+func (ui *UI) renderOverviewPanels() {
+	if ui.liveOverview == nil {
+		return
+	}
+	rows := buildOverviewDisplayRows(
+		ui.overviewRows,
+		ui.overviewSortBy,
+		ui.overviewSortAsc,
+		ui.overviewRequireOptions,
+	)
+	fillOverviewTable(ui.liveOverview, rows)
+}
+
+func buildOverviewDisplayRows(
+	rows []router.OverviewRow,
+	sortBy string,
+	asc bool,
+	requireOptions bool,
+) []overviewFuturesDisplayRow {
+	out := make([]overviewFuturesDisplayRow, 0, len(rows))
+	for _, row := range rows {
+		item := overviewFuturesDisplayRow{Symbol: strings.TrimSpace(row.Symbol)}
+		if item.Symbol == "" {
+			continue
+		}
+		if row.OIChgPct != nil {
+			item.OIChgPct = *row.OIChgPct
+			item.HasOIChgPct = true
+		}
+		if row.Turnover != nil {
+			item.Turnover = *row.Turnover
+			item.HasTurnover = true
+		}
+		if row.CGammaInv != nil {
+			item.CGammaInv = *row.CGammaInv
+			item.HasCGammaInv = true
+		}
+		if row.CGammaFnt != nil {
+			item.CGammaFnt = *row.CGammaFnt
+			item.HasCGammaFnt = true
+		}
+		if row.CGammaMid != nil {
+			item.CGammaMid = *row.CGammaMid
+			item.HasCGammaMid = true
+		}
+		if row.CGammaBack != nil {
+			item.CGammaBack = *row.CGammaBack
+			item.HasCGammaBack = true
+		}
+		if row.PGammaInv != nil {
+			item.PGammaInv = *row.PGammaInv
+			item.HasPGammaInv = true
+		}
+		if row.PGammaFnt != nil {
+			item.PGammaFnt = *row.PGammaFnt
+			item.HasPGammaFnt = true
+		}
+		if row.PGammaMid != nil {
+			item.PGammaMid = *row.PGammaMid
+			item.HasPGammaMid = true
+		}
+		if row.PGammaBack != nil {
+			item.PGammaBack = *row.PGammaBack
+			item.HasPGammaBack = true
+		}
+		out = append(out, item)
+	}
+
+	sortOverviewFuturesRows(out, sortBy, asc)
+	if !requireOptions {
+		return out
+	}
+	filtered := out[:0]
+	for _, row := range out {
+		if overviewRowHasOptionsGamma(row) {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
+}
+
+func sortOverviewFuturesRows(rows []overviewFuturesDisplayRow, sortBy string, asc bool) {
+	field := strings.ToLower(strings.TrimSpace(sortBy))
+	if field == "" {
+		field = defaultOverviewSortBy
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		left := rows[i]
+		right := rows[j]
+		switch field {
+		case "oi_chg", "oi_chg_pct":
+			if left.HasOIChgPct != right.HasOIChgPct {
+				return left.HasOIChgPct
+			}
+			if !left.HasOIChgPct {
+				return strings.ToLower(left.Symbol) < strings.ToLower(right.Symbol)
+			}
+			if left.OIChgPct == right.OIChgPct {
+				return strings.ToLower(left.Symbol) < strings.ToLower(right.Symbol)
+			}
+			if asc {
+				return left.OIChgPct < right.OIChgPct
+			}
+			return left.OIChgPct > right.OIChgPct
+		default:
+			if left.HasTurnover != right.HasTurnover {
+				return left.HasTurnover
+			}
+			if !left.HasTurnover {
+				return strings.ToLower(left.Symbol) < strings.ToLower(right.Symbol)
+			}
+			if left.Turnover == right.Turnover {
+				return strings.ToLower(left.Symbol) < strings.ToLower(right.Symbol)
+			}
+			if asc {
+				return left.Turnover < right.Turnover
+			}
+			return left.Turnover > right.Turnover
+		}
+	})
+}
+
+func overviewRowHasOptionsGamma(row overviewFuturesDisplayRow) bool {
+	return row.HasCGammaInv || row.HasPGammaInv ||
+		row.HasCGammaFnt || row.HasCGammaMid || row.HasCGammaBack ||
+		row.HasPGammaFnt || row.HasPGammaMid || row.HasPGammaBack
 }
 
 func (ui *UI) renderMarketRows() {

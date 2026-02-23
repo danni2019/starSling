@@ -1,5 +1,14 @@
 # Roadmap
 
+## Current Status (2026-02-23)
+- 当前处于 `Milestone 1` 完成后的增强迭代阶段，`Milestone 2` 仍是下一阶段重点。
+- 已完成本轮 Live TUI / router 优化：
+  - 左上 overview 改为按 `symbol` 合并的单表（与 watchlist 上下 50:50 分区）
+  - 新增期权 `gamma inventory` 到期日分桶（`front/mid/back`，`C/P` 分列）
+  - overview 筛选与排序支持 `Option Availability` 与 `oi_chg/turnover` 升降序
+  - overview 数值格式统一（`OI_CHG%` 百分比，其余科学计数法）
+  - 清理历史 TUI 原型/占位代码，降低维护和阅读成本
+
 ## Milestone 0: Core Foundation (Done)
 - Go 主程序、终端 UI 框架、配置管理、Python runtime bootstrap 已落地。
 - 本地 JSON-RPC 通信与路由服务（router）已落地。

@@ -11,11 +11,12 @@ type MarketSnapshot struct {
 }
 
 type ViewSnapshot struct {
-	Market  MarketSnapshot  `json:"market"`
-	Curve   CurveSnapshot   `json:"curve"`
-	Options OptionsSnapshot `json:"options"`
-	Unusual UnusualSnapshot `json:"unusual"`
-	Logs    LogSnapshot     `json:"logs"`
+	Market   MarketSnapshot   `json:"market"`
+	Curve    CurveSnapshot    `json:"curve"`
+	Options  OptionsSnapshot  `json:"options"`
+	Unusual  UnusualSnapshot  `json:"unusual"`
+	Overview OverviewSnapshot `json:"overview"`
+	Logs     LogSnapshot      `json:"logs"`
 }
 
 type UIState struct {
@@ -39,6 +40,31 @@ type CurveSnapshot struct {
 	Seq           int64            `json:"seq"`
 	Rows          []map[string]any `json:"rows"`
 	Stale         bool             `json:"stale,omitempty"`
+}
+
+type OverviewRow struct {
+	Symbol string `json:"symbol"`
+
+	OIChgPct *float64 `json:"oi_chg_pct,omitempty"`
+	Turnover *float64 `json:"turnover,omitempty"`
+
+	CGammaInv  *float64 `json:"c_gamma_inv,omitempty"`
+	CGammaFnt  *float64 `json:"c_gamma_fnt,omitempty"`
+	CGammaMid  *float64 `json:"c_gamma_mid,omitempty"`
+	CGammaBack *float64 `json:"c_gamma_back,omitempty"`
+
+	PGammaInv  *float64 `json:"p_gamma_inv,omitempty"`
+	PGammaFnt  *float64 `json:"p_gamma_fnt,omitempty"`
+	PGammaMid  *float64 `json:"p_gamma_mid,omitempty"`
+	PGammaBack *float64 `json:"p_gamma_back,omitempty"`
+}
+
+type OverviewSnapshot struct {
+	SchemaVersion int           `json:"schema_version"`
+	TS            int64         `json:"ts"`
+	Seq           int64         `json:"seq"`
+	Rows          []OverviewRow `json:"rows"`
+	Stale         bool          `json:"stale,omitempty"`
 }
 
 type UnusualSnapshot struct {

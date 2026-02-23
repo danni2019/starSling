@@ -2639,3 +2639,75 @@ func TestApplyRouterLogsUsesEventTimestamp(t *testing.T) {
 		t.Fatalf("expected runtime log prefix %q, got %q", wantPrefix, got)
 	}
 }
+
+func TestBuildOverviewDisplayRowsKeepsMergedGammaFieldsAndSortsByTurnover(t *testing.T) {
+	rows := buildOverviewDisplayRows(
+		[]router.OverviewRow{
+			{Symbol: "IH", Turnover: testFloatPtr(100)},
+			{
+				Symbol:    "IF",
+				Turnover:  testFloatPtr(200),
+				CGammaInv: testFloatPtr(10),
+				PGammaInv: testFloatPtr(20),
+			},
+		},
+		"turnover",
+		false,
+		false,
+	)
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(rows))
+	}
+	if rows[0].Symbol != "IF" || rows[1].Symbol != "IH" {
+		t.Fatalf("unexpected sort order: %q, %q", rows[0].Symbol, rows[1].Symbol)
+	}
+	if !rows[0].HasCGammaInv || rows[0].CGammaInv != 10 {
+		t.Fatalf("expected IF call gamma to be preserved, got %+v", rows[0])
+	}
+	if rows[1].HasCGammaInv || rows[1].HasPGammaInv {
+		t.Fatalf("expected IH to keep missing gamma placeholders, got %+v", rows[1])
+	}
+}
+
+func TestBuildOverviewDisplayRowsOptionAvailabilityUsesAnyValidGammaContribution(t *testing.T) {
+	rows := buildOverviewDisplayRows(
+		[]router.OverviewRow{
+			{Symbol: "IF", Turnover: testFloatPtr(200)},
+			{Symbol: "IH", Turnover: testFloatPtr(100), CGammaMid: testFloatPtr(0), CGammaInv: testFloatPtr(0)},
+			{Symbol: "IC", Turnover: testFloatPtr(90), PGammaBack: testFloatPtr(5), PGammaInv: testFloatPtr(5)},
+		},
+		"turnover",
+		false,
+		true,
+	)
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows after availability filter, got %d", len(rows))
+	}
+	if rows[0].Symbol != "IH" || rows[1].Symbol != "IC" {
+		t.Fatalf("unexpected filtered order/symbols: %+v", []string{rows[0].Symbol, rows[1].Symbol})
+	}
+}
+
+func TestBuildOverviewDisplayRowsSortsByOIChgAscending(t *testing.T) {
+	rows := buildOverviewDisplayRows(
+		[]router.OverviewRow{
+			{Symbol: "IF", OIChgPct: testFloatPtr(0.2)},
+			{Symbol: "IH", OIChgPct: testFloatPtr(-0.1)},
+			{Symbol: "IC", OIChgPct: testFloatPtr(0.05)},
+		},
+		"oi_chg",
+		true,
+		false,
+	)
+	gotOrder := []string{rows[0].Symbol, rows[1].Symbol, rows[2].Symbol}
+	wantOrder := []string{"IH", "IC", "IF"}
+	for i := range wantOrder {
+		if gotOrder[i] != wantOrder[i] {
+			t.Fatalf("unexpected sorted order at %d: got=%v want=%v", i, gotOrder, wantOrder)
+		}
+	}
+}
+
+func testFloatPtr(v float64) *float64 {
+	return &v
+}
