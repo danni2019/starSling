@@ -1027,11 +1027,17 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="starSling options worker")
     parser.add_argument("--router_addr", required=True, help="Router tcp addr, e.g. 127.0.0.1:19090")
     parser.add_argument("--risk_free_rate", type=float, default=DEFAULT_RISK_FREE_RATE, help="Risk-free rate for option greeks")
+    parser.add_argument("--days_in_year", type=int, default=int(PARAM_DAYS_IN_YEAR), help="Calendar days used for TTE year fraction")
     return parser.parse_args()
 
 
 def main() -> int:
+    global PARAM_DAYS_IN_YEAR
     args = parse_args()
+    if args.days_in_year <= 0 or args.days_in_year > 370:
+        log(f"invalid days_in_year: {args.days_in_year}")
+        return 2
+    PARAM_DAYS_IN_YEAR = float(args.days_in_year)
     router_target = parse_router_addr(args.router_addr)
     if router_target is None:
         log(f"invalid router_addr: {args.router_addr}")

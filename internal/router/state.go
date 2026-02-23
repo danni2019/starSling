@@ -15,6 +15,8 @@ const logBufferSize = 200
 const defaultTurnoverChgThreshold = 100000.0
 const defaultTurnoverRatioThreshold = 0.05
 const defaultOIRatioThreshold = 0.05
+const defaultGammaBucketFrontDays = 30
+const defaultGammaBucketMidDays = 90
 
 type State struct {
 	mu       sync.RWMutex
@@ -29,6 +31,8 @@ type State struct {
 	turnoverChgThreshold   float64
 	turnoverRatioThreshold float64
 	oiRatioThreshold       float64
+	gammaBucketFrontDays   int
+	gammaBucketMidDays     int
 
 	marketSeq   int64
 	curveSeq    int64
@@ -72,6 +76,8 @@ func NewState() *State {
 		turnoverChgThreshold:   defaultTurnoverChgThreshold,
 		turnoverRatioThreshold: defaultTurnoverRatioThreshold,
 		oiRatioThreshold:       defaultOIRatioThreshold,
+		gammaBucketFrontDays:   defaultGammaBucketFrontDays,
+		gammaBucketMidDays:     defaultGammaBucketMidDays,
 	}
 }
 
@@ -165,6 +171,8 @@ func (s *State) GetUIState() UIState {
 		TurnoverChgThreshold:   s.turnoverChgThreshold,
 		TurnoverRatioThreshold: s.turnoverRatioThreshold,
 		OIRatioThreshold:       s.oiRatioThreshold,
+		GammaBucketFrontDays:   s.gammaBucketFrontDays,
+		GammaBucketMidDays:     s.gammaBucketMidDays,
 	}
 }
 
@@ -280,6 +288,28 @@ func (s *State) SetUnusualThresholds(chgThreshold, ratioThreshold, oiRatioThresh
 	}
 }
 
+func (s *State) SetOverviewGammaBuckets(frontDays, midDays int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if frontDays <= 0 {
+		frontDays = defaultGammaBucketFrontDays
+	}
+	if midDays <= 0 || midDays <= frontDays {
+		midDays = defaultGammaBucketMidDays
+	}
+	if midDays <= frontDays {
+		frontDays = defaultGammaBucketFrontDays
+		midDays = defaultGammaBucketMidDays
+	}
+	if s.gammaBucketFrontDays == frontDays && s.gammaBucketMidDays == midDays {
+		return
+	}
+	s.gammaBucketFrontDays = frontDays
+	s.gammaBucketMidDays = midDays
+	s.overviewSeq++
+	s.rebuildOverviewLocked()
+}
+
 func filterOptionsRows(rows []map[string]any, focus string) []map[string]any {
 	if strings.TrimSpace(focus) == "" {
 		return rows
@@ -313,7 +343,7 @@ func filterNonOptionMarketRows(rows []map[string]any) []map[string]any {
 }
 
 func (s *State) buildOverviewSnapshotLocked() OverviewSnapshot {
-	rows := buildOverviewRows(s.market.Rows, s.options.Rows)
+	rows := buildOverviewRows(s.market.Rows, s.options.Rows, s.gammaBucketFrontDays, s.gammaBucketMidDays)
 	return OverviewSnapshot{
 		SchemaVersion: 1,
 		TS:            time.Now().UnixMilli(),
@@ -326,7 +356,7 @@ func (s *State) rebuildOverviewLocked() {
 	s.overview = s.buildOverviewSnapshotLocked()
 }
 
-func buildOverviewRows(marketRows, optionsRows []map[string]any) []OverviewRow {
+func buildOverviewRows(marketRows, optionsRows []map[string]any, frontDays, midDays int) []OverviewRow {
 	type futuresAgg struct {
 		DisplaySymbol string
 
@@ -450,7 +480,7 @@ func buildOverviewRows(marketRows, optionsRows []map[string]any) []OverviewRow {
 			optionsBySymbol[symbolKey] = agg
 		}
 		agg.HasAny = true
-		bucket := overviewTTEBucket(tte)
+		bucket := overviewTTEBucket(tte, frontDays, midDays)
 		if cp == "c" {
 			agg.HasCInv = true
 			agg.CInv += contrib
@@ -581,14 +611,20 @@ const (
 	overviewBucketBack
 )
 
-func overviewTTEBucket(tte float64) overviewExpiryBucket {
+func overviewTTEBucket(tte float64, frontDays, midDays int) overviewExpiryBucket {
 	if math.IsNaN(tte) || math.IsInf(tte, 0) || tte <= 0 {
 		return overviewBucketUnknown
 	}
-	if tte <= 30 {
+	if frontDays <= 0 {
+		frontDays = defaultGammaBucketFrontDays
+	}
+	if midDays <= 0 || midDays <= frontDays {
+		midDays = defaultGammaBucketMidDays
+	}
+	if tte <= float64(frontDays) {
 		return overviewBucketFront
 	}
-	if tte <= 90 {
+	if tte <= float64(midDays) {
 		return overviewBucketMid
 	}
 	return overviewBucketBack

@@ -244,6 +244,14 @@ func (s *Server) handleRequest(conn net.Conn, msg ipc.Message) {
 		}
 		s.state.SetUnusualThresholds(params.TurnoverChgThreshold, params.TurnoverRatioThreshold, params.OIRatioThreshold)
 		_ = s.writeResult(conn, msg.ID, map[string]bool{"ok": true})
+	case "ui.set_overview_gamma_buckets":
+		var params SetOverviewGammaBucketsParams
+		if err := json.Unmarshal(msg.Params, &params); err != nil {
+			_ = s.writeError(conn, msg.ID, -32602, "invalid params")
+			return
+		}
+		s.state.SetOverviewGammaBuckets(params.FrontDays, params.MidDays)
+		_ = s.writeResult(conn, msg.ID, map[string]bool{"ok": true})
 	default:
 		_ = s.writeError(conn, msg.ID, -32601, "method not found")
 	}

@@ -11,7 +11,9 @@ import (
 
 func (ui *UI) buildLiveScreen() tview.Primitive {
 	ui.liveOverview = tview.NewTable()
-	ui.liveOverview.SetSelectable(true, true)
+	// Row-only selection avoids tview cell-selection edge cases when the overview
+	// is empty (headers + placeholder) during the initial Live screen draw.
+	ui.liveOverview.SetSelectable(true, false)
 	ui.liveOverview.SetFixed(1, 0)
 	ui.liveOverview.SetSelectedStyle(tcell.StyleDefault.Foreground(colorMenuSelected).Background(colorHighlight))
 	ui.liveOverview.SetBorder(true).SetTitle("Overview (symbol | futures + options gamma buckets)")
@@ -27,20 +29,22 @@ func (ui *UI) buildLiveScreen() tview.Primitive {
 		if row <= 0 {
 			return
 		}
-		cell := ui.liveMarket.GetCell(row, 0)
-		if cell == nil {
+		idx := row - 1
+		if idx < 0 || idx >= len(ui.marketRows) {
 			return
 		}
-		symbol := strings.TrimSpace(cell.Text)
+		symbol := strings.TrimSpace(ui.marketRows[idx].Symbol)
 		if symbol == "" {
 			return
 		}
-		ui.focusSymbol = symbol
+		ui.setFocusSymbolState(symbol)
 		ui.focusSyncPending = false
 		if ui.rpcClient != nil {
 			ui.pushFocusSymbol(symbol)
 		}
-		ui.renderFlowAggregation()
+		// Avoid re-entering table methods while tview is processing selection changes.
+		// Coalesce renders because rapid key repeats can otherwise flood QueueUpdateDraw.
+		ui.queueFlowRenderFromSelection()
 	})
 
 	if runtimeDebugUIEnabled() {
@@ -130,15 +134,15 @@ func fillOverviewTable(table *tview.Table, rows []overviewFuturesDisplayRow) {
 	headers := []string{
 		"SYMBOL",
 		"OI_CHG%",
-		"TURNOVER",
-		"C_GAMMA_INV",
-		"C_GAMMA_FNT",
-		"C_GAMMA_MID",
-		"C_GAMMA_BACK",
-		"P_GAMMA_INV",
-		"P_GAMMA_FNT",
-		"P_GAMMA_MID",
-		"P_GAMMA_BACK",
+		"TURN",
+		"C_INV",
+		"C_FNT",
+		"C_MID",
+		"C_BAK",
+		"P_INV",
+		"P_FNT",
+		"P_MID",
+		"P_BAK",
 	}
 	for col, label := range headers {
 		cell := tview.NewTableCell(padTableCell(label)).
@@ -149,8 +153,8 @@ func fillOverviewTable(table *tview.Table, rows []overviewFuturesDisplayRow) {
 	}
 	if len(rows) == 0 {
 		table.SetCell(1, 0, tview.NewTableCell("Waiting for overview...").
-			SetTextColor(colorMuted).
-			SetSelectable(false))
+			SetTextColor(colorMuted))
+		table.Select(1, 0)
 		return
 	}
 	for i, row := range rows {
@@ -188,6 +192,13 @@ func fillOverviewTable(table *tview.Table, rows []overviewFuturesDisplayRow) {
 
 func fillMarketTable(table *tview.Table, rows []MarketRow) {
 	table.Clear()
+	if table != nil {
+		if len(rows) == 0 {
+			table.SetSelectable(false, false)
+		} else {
+			table.SetSelectable(true, false)
+		}
+	}
 	headers := []string{"CONTRACT", "EXCH", "LAST", "CHG", "CHG%", "BIDV", "BID", "ASK", "ASKV", "VOL", "TURNOVER", "OI", "OI_CHG%", "TS"}
 	for col, label := range headers {
 		cell := tview.NewTableCell(padTableCell(label)).
@@ -195,6 +206,9 @@ func fillMarketTable(table *tview.Table, rows []MarketRow) {
 			SetAlign(tview.AlignLeft).
 			SetSelectable(false)
 		table.SetCell(0, col, cell)
+	}
+	if len(rows) == 0 {
+		return
 	}
 
 	for i, row := range rows {

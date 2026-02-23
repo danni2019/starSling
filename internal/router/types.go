@@ -24,6 +24,8 @@ type UIState struct {
 	TurnoverChgThreshold   float64 `json:"turnover_chg_threshold"`
 	TurnoverRatioThreshold float64 `json:"turnover_ratio_threshold"`
 	OIRatioThreshold       float64 `json:"oi_ratio_threshold"`
+	GammaBucketFrontDays   int     `json:"gamma_bucket_front_days,omitempty"`
+	GammaBucketMidDays     int     `json:"gamma_bucket_mid_days,omitempty"`
 }
 
 type OptionsSnapshot struct {
@@ -107,4 +109,9 @@ type SetUnusualThresholdParams struct {
 	TurnoverChgThreshold   float64 `json:"turnover_chg_threshold"`
 	TurnoverRatioThreshold float64 `json:"turnover_ratio_threshold"`
 	OIRatioThreshold       float64 `json:"oi_ratio_threshold"`
+}
+
+type SetOverviewGammaBucketsParams struct {
+	FrontDays int `json:"front_days"`
+	MidDays   int `json:"mid_days"`
 }

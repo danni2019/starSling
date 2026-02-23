@@ -35,6 +35,7 @@ const (
 	screenLive      screen = "live"
 	screenSetup     screen = "setup"
 	screenConfig    screen = "config"
+	screenSettings  screen = "settings"
 	screenDrilldown screen = "drilldown"
 )
 
@@ -117,14 +118,26 @@ type UI struct {
 	configInputPass   *tview.InputField
 	configNameInput   *tview.InputField
 
+	settingsForm            *tview.Form
+	settingsStatus          *tview.TextView
+	settingsInputRiskFree   *tview.InputField
+	settingsInputDaysInYear *tview.InputField
+	settingsInputGammaFront *tview.InputField
+	settingsInputGammaMid   *tview.InputField
+
 	ticker *time.Ticker
 
-	liveProc      *live.Process
-	liveCancel    context.CancelFunc
-	optsProc      *live.Process
-	optsCancel    context.CancelFunc
-	unusualProc   *live.Process
-	unusualCancel context.CancelFunc
+	liveProc                       *live.Process
+	liveCancel                     context.CancelFunc
+	optsProc                       *live.Process
+	optsCancel                     context.CancelFunc
+	unusualProc                    *live.Process
+	unusualCancel                  context.CancelFunc
+	liveStartMu                    sync.Mutex
+	liveStartStop                  context.CancelFunc
+	liveStarting                   bool
+	liveStartSeq                   uint64
+	liveStartPendingOptionsRestart bool
 
 	lastMarketSeq             int64
 	lastMarketStale           bool
@@ -184,6 +197,12 @@ type UI struct {
 	logoTitleWidth            int
 	logoFrame                 int
 	lastWidth                 int
+	liveSettingsLoadSeq       atomic.Uint64
+	liveSettingsApplyPending  bool
+	liveSettingsApplySeq      uint64
+	liveSettingsApplyAfter    func()
+	liveFlowRenderQueued      atomic.Bool
+	liveFocusPollSymbol       atomic.Value // string
 }
 
 func newUI(routerAddr string, logger *slog.Logger) *UI {
@@ -226,6 +245,7 @@ func newUI(routerAddr string, logger *slog.Logger) *UI {
 	if ui.routerAddr != "" {
 		ui.rpcClient = ipc.NewClient(ui.routerAddr)
 	}
+	ui.liveFocusPollSymbol.Store("")
 
 	ui.buildScreens()
 	ui.bindKeys()
@@ -251,11 +271,13 @@ func (ui *UI) buildScreens() {
 	liveView := ui.buildLiveScreen()
 	setup := ui.buildSetupScreen()
 	configView := ui.buildConfigScreen()
+	settingsView := ui.buildSettingsScreen()
 
 	ui.pages.AddPage(string(screenMain), main, true, true)
 	ui.pages.AddPage(string(screenLive), liveView, true, false)
 	ui.pages.AddPage(string(screenSetup), setup, true, false)
 	ui.pages.AddPage(string(screenConfig), configView, true, false)
+	ui.pages.AddPage(string(screenSettings), settingsView, true, false)
 }
 
 func (ui *UI) bindKeys() {
@@ -268,7 +290,7 @@ func (ui *UI) bindKeys() {
 		switch ui.currentScreen() {
 		case screenLive:
 			return ui.handleLiveKeys(event)
-		case screenSetup, screenConfig:
+		case screenSetup, screenConfig, screenSettings:
 			if event.Key() == tcell.KeyEsc {
 				ui.setScreen(screenMain)
 				return nil
@@ -296,15 +318,9 @@ func (ui *UI) handleLiveKeys(event *tcell.EventKey) *tcell.EventKey {
 		ui.cycleFocus(-1)
 		return nil
 	case tcell.KeyRight:
-		if ui.app.GetFocus() == ui.liveOverview {
-			return event
-		}
 		ui.cycleFocus(1)
 		return nil
 	case tcell.KeyLeft:
-		if ui.app.GetFocus() == ui.liveOverview {
-			return event
-		}
 		ui.cycleFocus(-1)
 		return nil
 	case tcell.KeyEnter:
@@ -334,6 +350,9 @@ func (ui *UI) handleLiveKeys(event *tcell.EventKey) *tcell.EventKey {
 }
 
 func (ui *UI) setScreen(next screen) {
+	if next != screenLive {
+		ui.invalidateLivePersistedSettingsLoad()
+	}
 	ui.setCurrentScreen(next)
 	ui.pages.SwitchToPage(string(next))
 	switch next {
@@ -341,13 +360,27 @@ func (ui *UI) setScreen(next screen) {
 		ui.app.SetFocus(ui.menu)
 	case screenLive:
 		ui.focusIndex = 0
-		ui.setFocus(ui.focusIndex)
-		ui.startLiveProcessIfNeeded()
-	case screenSetup, screenConfig:
+		// Defer focusing live tables until after the screen switch callback unwinds.
+		// Switching directly from the main menu into a focused table can trigger
+		// tview re-entrancy edge cases during the same input event.
+		go func() {
+			ui.app.QueueUpdateDraw(func() {
+				if ui.currentScreen() != screenLive || len(ui.focusables) == 0 {
+					return
+				}
+				ui.setFocus(ui.focusIndex)
+			})
+		}()
+		ui.loadLivePersistedSettingsAsync(func() {
+			ui.startLiveProcessIfNeeded()
+		})
+	case screenSetup, screenConfig, screenSettings:
 		if next == screenSetup {
 			ui.showSetupMenu()
-		} else {
+		} else if next == screenConfig {
 			ui.showConfigMenu()
+		} else {
+			ui.showSettingsScreen()
 		}
 	}
 }
@@ -434,6 +467,7 @@ func (ui *UI) openOverviewSettings() {
 		ui.overviewSortAsc = strings.EqualFold(strings.TrimSpace(selectedOrder), "asc")
 		ui.overviewRequireOptions = optionAvailability.IsChecked()
 		ui.renderOverviewPanels()
+		ui.saveOverviewSettingsToStore()
 		ui.closeDrilldown()
 	})
 	form.AddButton("Cancel", func() {
@@ -520,6 +554,7 @@ func (ui *UI) openMarketFilter() {
 		ui.renderMarketRows()
 		ui.ensureFocusSymbol()
 		ui.renderFlowAggregation()
+		ui.saveMarketSettingsToStore()
 		ui.closeDrilldown()
 	})
 	form.AddButton("Reset", func() {
@@ -527,6 +562,7 @@ func (ui *UI) openMarketFilter() {
 		ui.renderMarketRows()
 		ui.ensureFocusSymbol()
 		ui.renderFlowAggregation()
+		ui.saveMarketSettingsToStore()
 		ui.closeDrilldown()
 	})
 	form.AddButton("Cancel", func() {
@@ -590,6 +626,7 @@ func (ui *UI) openUnusualThresholdSettings() {
 		}
 		hint.SetText(" ")
 		ui.appendLiveLogLine(fmt.Sprintf("unusual thresholds updated: chg>=%.0f turnover_ratio>=%.2f%% oi_ratio>=%.2f%%", chg, ratio*100, oiRatio*100))
+		ui.saveUnusualSettingsToStore()
 		ui.closeDrilldown()
 	})
 	form.AddButton("Cancel", func() {
@@ -667,9 +704,11 @@ func (ui *UI) openFlowSettings() {
 		minWindowInput.SetText(strconv.Itoa(ui.flowMinAnalysisSeconds))
 		if !valid {
 			hint.SetText("invalid input detected, reset to defaults")
+			ui.saveFlowSettingsToStore()
 			return
 		}
 		hint.SetText(" ")
+		ui.saveFlowSettingsToStore()
 		ui.closeDrilldown()
 	})
 	form.AddButton("Cancel", func() {
@@ -874,6 +913,7 @@ func (ui *UI) openOptionsFilter() {
 			ui.appendLiveLogLine("invalid delta range, reset to defaults [0.25, 0.5]")
 		}
 		ui.renderOptionsSnapshot()
+		ui.saveOptionsSettingsToStore()
 		ui.closeDrilldown()
 	})
 	form.AddButton("Reset", func() {
@@ -881,6 +921,7 @@ func (ui *UI) openOptionsFilter() {
 		ui.optionsDeltaAbsMin = defaultOptionsDeltaAbsMin
 		ui.optionsDeltaAbsMax = defaultOptionsDeltaAbsMax
 		ui.renderOptionsSnapshot()
+		ui.saveOptionsSettingsToStore()
 		ui.closeDrilldown()
 	})
 	form.AddButton("Cancel", func() {
@@ -895,6 +936,7 @@ func (ui *UI) closeDrilldown() {
 	ui.pages.RemovePage(string(screenDrilldown))
 	ui.setCurrentScreen(screenLive)
 	ui.setFocus(ui.focusIndex)
+	ui.resumeDeferredLivePersistedSettingsApply()
 }
 
 func (ui *UI) startTicker() {
@@ -929,10 +971,16 @@ func (ui *UI) pollLiveSnapshot() {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	var view router.ViewSnapshot
+	focusSymbol := ui.focusSymbolForPolling()
 	err := ui.rpcClient.Call(ctx, "router.get_view_snapshot", router.GetViewSnapshotParams{
-		FocusSymbol: ui.currentFocusSymbol(),
+		// Do not read mutable UI focus state from the ticker goroutine (data race risk).
+		// Router keeps its own focus cache via ui.set_focus_symbol.
+		FocusSymbol: focusSymbol,
 	}, &view)
 	ui.app.QueueUpdateDraw(func() {
+		if ui.currentScreen() != screenLive {
+			return
+		}
 		ui.logoFrame = (ui.logoFrame + 1) % 2
 		ui.updateLogo(ui.lastWidth)
 		if err != nil {
@@ -946,6 +994,33 @@ func (ui *UI) pollLiveSnapshot() {
 		ui.applyUnusualSnapshot(view.Unusual)
 		ui.applyRouterLogs(view.Logs)
 	})
+}
+
+func (ui *UI) queueFlowRenderFromSelection() {
+	if !ui.liveFlowRenderQueued.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		ui.app.QueueUpdateDraw(func() {
+			ui.liveFlowRenderQueued.Store(false)
+			if ui.currentScreen() != screenLive {
+				return
+			}
+			ui.renderFlowAggregation()
+		})
+	}()
+}
+
+func (ui *UI) focusSymbolForPolling() string {
+	// pollLiveSnapshot runs in the ticker goroutine; avoid racing on mutable UI state.
+	// Use a UI-thread-updated atomic snapshot so polling stays correct even if the
+	// async ui.set_focus_symbol RPC is delayed or fails.
+	if raw := ui.liveFocusPollSymbol.Load(); raw != nil {
+		if symbol, ok := raw.(string); ok {
+			return strings.TrimSpace(symbol)
+		}
+	}
+	return ""
 }
 
 func (ui *UI) applyOverviewSnapshot(snapshot router.OverviewSnapshot) {
@@ -2302,6 +2377,12 @@ func (ui *UI) currentFocusSymbol() string {
 		return ""
 	}
 	return strings.TrimSpace(cell.Text)
+}
+
+func (ui *UI) setFocusSymbolState(symbol string) {
+	trimmed := strings.TrimSpace(symbol)
+	ui.focusSymbol = trimmed
+	ui.liveFocusPollSymbol.Store(trimmed)
 }
 
 func convertUnusualTrades(rows []map[string]any) []TradeRow {
@@ -4496,42 +4577,315 @@ func (ui *UI) sortDirection() string {
 	return "desc"
 }
 
+type liveStartupRequest struct {
+	seq         uint64
+	startCtx    context.Context
+	routerAddr  string
+	needLive    bool
+	needOptions bool
+	needUnusual bool
+}
+
+type liveStartupResult struct {
+	req liveStartupRequest
+
+	liveCfg config.Config
+
+	liveProc   *live.Process
+	liveCancel context.CancelFunc
+	liveErr    error
+
+	optsProc   *live.Process
+	optsCancel context.CancelFunc
+	optsErr    error
+
+	unusualProc   *live.Process
+	unusualCancel context.CancelFunc
+	unusualErr    error
+
+	phaseLogs []string
+}
+
 func (ui *UI) startLiveProcessIfNeeded() {
-	if ui.liveProc != nil && !ui.liveProc.Done() {
-		ui.startOptionsWorkerIfNeeded()
-		ui.startUnusualWorkerIfNeeded()
+	req, ok := ui.beginLiveStartupRequest()
+	if !ok {
 		return
 	}
-	if strings.TrimSpace(ui.routerAddr) == "" {
+	go ui.runLiveStartup(req)
+}
+
+func (ui *UI) beginLiveStartupRequest() (liveStartupRequest, bool) {
+	req := liveStartupRequest{}
+	routerAddr := strings.TrimSpace(ui.routerAddr)
+	if routerAddr == "" {
 		ui.appendLiveLogLine("router addr missing")
-		return
+		return req, false
 	}
-	_, cfg, err := configstore.LoadDefault()
-	if err != nil {
-		ui.appendLiveLogLine("load config failed: " + err.Error())
-		return
+
+	needLive := ui.liveProc == nil || ui.liveProc.Done()
+	needOptions := ui.optsProc == nil || ui.optsProc.Done()
+	needUnusual := ui.unusualProc == nil || ui.unusualProc.Done()
+	if !needLive && !needOptions && !needUnusual {
+		return req, false
 	}
-	if err := cfg.ValidateLiveMD(); err != nil {
-		ui.appendLiveLogLine("invalid live config: " + err.Error())
+
+	ui.liveStartMu.Lock()
+	defer ui.liveStartMu.Unlock()
+	if ui.liveStarting {
+		return req, false
+	}
+	startCtx, startCancel := context.WithCancel(context.Background())
+	ui.liveStarting = true
+	ui.liveStartSeq++
+	ui.liveStartStop = startCancel
+	ui.liveStartPendingOptionsRestart = false
+	req = liveStartupRequest{
+		seq:         ui.liveStartSeq,
+		startCtx:    startCtx,
+		routerAddr:  routerAddr,
+		needLive:    needLive,
+		needOptions: needOptions,
+		needUnusual: needUnusual,
+	}
+	return req, true
+}
+
+func (ui *UI) isLiveStartupRequestCurrent(seq uint64) bool {
+	ui.liveStartMu.Lock()
+	defer ui.liveStartMu.Unlock()
+	return ui.liveStarting && ui.liveStartSeq == seq
+}
+
+func (ui *UI) deferOptionsWorkerRestartUntilLiveStartupCompletes() bool {
+	ui.liveStartMu.Lock()
+	defer ui.liveStartMu.Unlock()
+	if !ui.liveStarting || ui.liveStartPendingOptionsRestart {
+		return false
+	}
+	ui.liveStartPendingOptionsRestart = true
+	return true
+}
+
+func (ui *UI) consumeDeferredOptionsWorkerRestart() bool {
+	ui.liveStartMu.Lock()
+	defer ui.liveStartMu.Unlock()
+	if !ui.liveStartPendingOptionsRestart {
+		return false
+	}
+	ui.liveStartPendingOptionsRestart = false
+	return true
+}
+
+func (ui *UI) completeLiveStartupRequest(seq uint64) {
+	ui.liveStartMu.Lock()
+	defer ui.liveStartMu.Unlock()
+	if ui.liveStartSeq == seq {
+		ui.liveStarting = false
+		ui.liveStartStop = nil
+		ui.liveStartPendingOptionsRestart = false
+	}
+}
+
+func (ui *UI) runLiveStartup(req liveStartupRequest) {
+	result := liveStartupResult{req: req}
+
+	logPhase := func(name string, started time.Time) {
+		result.phaseLogs = append(result.phaseLogs, fmt.Sprintf("live startup phase %s: %s", name, time.Since(started).Round(time.Millisecond)))
+	}
+
+	if req.needLive {
+		t0 := time.Now()
+		_, cfg, err := configstore.LoadDefault()
+		if err != nil {
+			result.liveErr = fmt.Errorf("load config failed: %w", err)
+		} else if err := cfg.ValidateLiveMD(); err != nil {
+			result.liveErr = fmt.Errorf("invalid live config: %w", err)
+		} else {
+			result.liveCfg = cfg
+			parentCtx := req.startCtx
+			if parentCtx == nil {
+				parentCtx = context.Background()
+			}
+			liveCtx, cancel := context.WithCancel(parentCtx)
+			proc, startErr := live.StartDetached(liveCtx, cfg.LiveMD, "", req.routerAddr, ui.logger)
+			if startErr != nil {
+				cancel()
+				result.liveErr = fmt.Errorf("start live md failed: %w", startErr)
+			} else {
+				result.liveProc = proc
+				result.liveCancel = cancel
+			}
+		}
+		logPhase("live_md", t0)
+	}
+
+	if result.liveErr == nil {
+		if req.needOptions {
+			t0 := time.Now()
+			parentCtx := req.startCtx
+			if parentCtx == nil {
+				parentCtx = context.Background()
+			}
+			workerCtx, workerCancel := context.WithCancel(parentCtx)
+			proc, err := live.StartOptionsWorkerDetached(workerCtx, "", req.routerAddr, ui.logger)
+			if err != nil {
+				workerCancel()
+				result.optsErr = fmt.Errorf("start options worker failed: %w", err)
+			} else {
+				result.optsProc = proc
+				result.optsCancel = workerCancel
+			}
+			logPhase("options_worker", t0)
+		}
+		if req.needUnusual {
+			t0 := time.Now()
+			parentCtx := req.startCtx
+			if parentCtx == nil {
+				parentCtx = context.Background()
+			}
+			workerCtx, workerCancel := context.WithCancel(parentCtx)
+			proc, err := live.StartUnusualWorkerDetached(workerCtx, "", req.routerAddr, ui.logger)
+			if err != nil {
+				workerCancel()
+				result.unusualErr = fmt.Errorf("start unusual worker failed: %w", err)
+			} else {
+				result.unusualProc = proc
+				result.unusualCancel = workerCancel
+			}
+			logPhase("unusual_worker", t0)
+		}
+
+	}
+
+	ui.app.QueueUpdateDraw(func() {
+		defer ui.completeLiveStartupRequest(req.seq)
+		if !ui.isLiveStartupRequestCurrent(req.seq) {
+			ui.stopDetachedStartupProcesses(result)
+			return
+		}
+		ui.applyLiveStartupResult(result)
+	})
+}
+
+func (ui *UI) applyLiveStartupResult(result liveStartupResult) {
+	for _, msg := range result.phaseLogs {
+		ui.appendLiveLogLine(msg)
+	}
+
+	if err := result.liveErr; err != nil {
+		ui.appendLiveLogLine(err.Error())
+		ui.stopDetachedStartupProcesses(result)
 		return
 	}
 
-	liveCtx, cancel := context.WithCancel(context.Background())
-	proc, err := live.StartDetached(liveCtx, cfg.LiveMD, "", ui.routerAddr, ui.logger)
-	if err != nil {
-		cancel()
-		ui.appendLiveLogLine("start live md failed: " + err.Error())
-		return
-	}
-	ui.liveCancel = cancel
-	ui.liveProc = proc
-	ui.appendLiveLogLine(fmt.Sprintf("live md started on %s:%d", cfg.LiveMD.Host, cfg.LiveMD.Port))
-	ui.startOptionsWorkerIfNeeded()
-	ui.startUnusualWorkerIfNeeded()
-	if err := ui.pushUnusualThresholds(); err != nil {
-		ui.appendLiveLogLine("sync unusual thresholds failed: " + err.Error())
+	if result.liveProc != nil {
+		if ui.liveProc != nil && !ui.liveProc.Done() {
+			if result.liveCancel != nil {
+				result.liveCancel()
+			}
+			result.liveProc.Stop()
+		} else {
+			ui.liveCancel = result.liveCancel
+			ui.liveProc = result.liveProc
+			ui.appendLiveLogLine(fmt.Sprintf("live md started on %s:%d", result.liveCfg.LiveMD.Host, result.liveCfg.LiveMD.Port))
+			ui.watchLiveProcessExit(result.liveProc)
+		}
 	}
 
+	if result.optsProc != nil {
+		if ui.optsProc != nil && !ui.optsProc.Done() {
+			if result.optsCancel != nil {
+				result.optsCancel()
+			}
+			result.optsProc.Stop()
+		} else {
+			ui.optsCancel = result.optsCancel
+			ui.optsProc = result.optsProc
+			ui.appendLiveLogLine("options worker started")
+			ui.watchOptionsWorkerExit(result.optsProc)
+		}
+	}
+	if result.optsErr != nil {
+		ui.appendLiveLogLine(result.optsErr.Error())
+	}
+
+	if result.unusualProc != nil {
+		if ui.unusualProc != nil && !ui.unusualProc.Done() {
+			if result.unusualCancel != nil {
+				result.unusualCancel()
+			}
+			result.unusualProc.Stop()
+		} else {
+			ui.unusualCancel = result.unusualCancel
+			ui.unusualProc = result.unusualProc
+			ui.appendLiveLogLine("unusual worker started")
+			ui.watchUnusualWorkerExit(result.unusualProc)
+		}
+	}
+	if result.unusualErr != nil {
+		ui.appendLiveLogLine(result.unusualErr.Error())
+	}
+
+	if result.req.needLive || result.req.needUnusual {
+		if err := ui.pushUnusualThresholds(); err != nil {
+			ui.appendLiveLogLine("sync unusual thresholds failed: " + err.Error())
+		}
+	}
+
+	if ui.consumeDeferredOptionsWorkerRestart() && ui.liveProc != nil && !ui.liveProc.Done() {
+		ui.appendLiveLogLine("restarting options worker to apply settings")
+		ui.restartOptionsWorkerAfterExit()
+	}
+}
+
+func (ui *UI) stopDetachedStartupProcesses(result liveStartupResult) {
+	if result.optsCancel != nil {
+		result.optsCancel()
+	}
+	if result.optsProc != nil {
+		result.optsProc.Stop()
+	}
+	if result.unusualCancel != nil {
+		result.unusualCancel()
+	}
+	if result.unusualProc != nil {
+		result.unusualProc.Stop()
+	}
+	if result.liveCancel != nil {
+		result.liveCancel()
+	}
+	if result.liveProc != nil {
+		result.liveProc.Stop()
+	}
+}
+
+func (ui *UI) stopLiveProcess() {
+	ui.liveStartMu.Lock()
+	ui.liveStartSeq++
+	ui.liveStarting = false
+	startStop := ui.liveStartStop
+	ui.liveStartStop = nil
+	ui.liveStartPendingOptionsRestart = false
+	ui.liveStartMu.Unlock()
+	if startStop != nil {
+		startStop()
+	}
+	if ui.liveCancel != nil {
+		ui.liveCancel()
+		ui.liveCancel = nil
+	}
+	if ui.liveProc != nil {
+		ui.liveProc.Stop()
+		ui.liveProc = nil
+	}
+	ui.stopOptionsWorker()
+	ui.stopUnusualWorker()
+}
+
+func (ui *UI) watchLiveProcessExit(proc *live.Process) {
+	if proc == nil {
+		return
+	}
 	go func(startedProc *live.Process) {
 		err := <-startedProc.Exit()
 		ui.app.QueueUpdateDraw(func() {
@@ -4548,19 +4902,6 @@ func (ui *UI) startLiveProcessIfNeeded() {
 			ui.stopUnusualWorker()
 		})
 	}(proc)
-}
-
-func (ui *UI) stopLiveProcess() {
-	if ui.liveCancel != nil {
-		ui.liveCancel()
-		ui.liveCancel = nil
-	}
-	if ui.liveProc != nil {
-		ui.liveProc.Stop()
-		ui.liveProc = nil
-	}
-	ui.stopOptionsWorker()
-	ui.stopUnusualWorker()
 }
 
 func (ui *UI) startOptionsWorkerIfNeeded() {
@@ -4582,6 +4923,13 @@ func (ui *UI) startOptionsWorkerIfNeeded() {
 	ui.optsProc = proc
 	ui.appendLiveLogLine("options worker started")
 
+	ui.watchOptionsWorkerExit(proc)
+}
+
+func (ui *UI) watchOptionsWorkerExit(proc *live.Process) {
+	if proc == nil {
+		return
+	}
 	go func(startedProc *live.Process) {
 		err := <-startedProc.Exit()
 		ui.app.QueueUpdateDraw(func() {
@@ -4609,6 +4957,31 @@ func (ui *UI) stopOptionsWorker() {
 	}
 }
 
+func (ui *UI) restartOptionsWorkerAfterExit() {
+	if ui.liveProc == nil || ui.liveProc.Done() {
+		return
+	}
+	stoppingProc := ui.optsProc
+	if stoppingProc == nil || stoppingProc.Done() {
+		ui.stopOptionsWorker()
+		ui.startLiveProcessIfNeeded()
+		return
+	}
+	if ui.optsCancel != nil {
+		ui.optsCancel()
+	}
+	stoppingProc.Stop()
+	go func(proc *live.Process) {
+		<-proc.Exit()
+		ui.app.QueueUpdateDraw(func() {
+			if ui.liveProc == nil || ui.liveProc.Done() {
+				return
+			}
+			ui.startLiveProcessIfNeeded()
+		})
+	}(stoppingProc)
+}
+
 func (ui *UI) startUnusualWorkerIfNeeded() {
 	if ui.unusualProc != nil && !ui.unusualProc.Done() {
 		return
@@ -4628,6 +5001,13 @@ func (ui *UI) startUnusualWorkerIfNeeded() {
 	ui.unusualProc = proc
 	ui.appendLiveLogLine("unusual worker started")
 
+	ui.watchUnusualWorkerExit(proc)
+}
+
+func (ui *UI) watchUnusualWorkerExit(proc *live.Process) {
+	if proc == nil {
+		return
+	}
 	go func(startedProc *live.Process) {
 		err := <-startedProc.Exit()
 		ui.app.QueueUpdateDraw(func() {
@@ -4656,15 +5036,23 @@ func (ui *UI) stopUnusualWorker() {
 }
 
 func (ui *UI) pushUnusualThresholds() error {
+	return ui.pushUnusualThresholdsValues(
+		ui.unusualChgThreshold,
+		ui.unusualRatioThreshold,
+		ui.unusualOIRatioThreshold,
+	)
+}
+
+func (ui *UI) pushUnusualThresholdsValues(chgThreshold, ratioThreshold, oiRatioThreshold float64) error {
 	if ui.rpcClient == nil {
 		return fmt.Errorf("router rpc unavailable")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	return ui.rpcClient.Call(ctx, "ui.set_unusual_threshold", router.SetUnusualThresholdParams{
-		TurnoverChgThreshold:   ui.unusualChgThreshold,
-		TurnoverRatioThreshold: ui.unusualRatioThreshold,
-		OIRatioThreshold:       ui.unusualOIRatioThreshold,
+		TurnoverChgThreshold:   chgThreshold,
+		TurnoverRatioThreshold: ratioThreshold,
+		OIRatioThreshold:       oiRatioThreshold,
 	}, nil)
 }
 
@@ -4702,7 +5090,7 @@ func (ui *UI) ensureFocusSymbol() {
 	}
 	if symbol == "" {
 		if current != "" {
-			ui.focusSymbol = ""
+			ui.setFocusSymbolState("")
 			ui.focusSyncPending = false
 			ui.pushFocusSymbol("")
 			ui.renderFlowAggregation()
@@ -4710,14 +5098,14 @@ func (ui *UI) ensureFocusSymbol() {
 		return
 	}
 	if strings.EqualFold(current, symbol) {
-		ui.focusSymbol = symbol
+		ui.setFocusSymbolState(symbol)
 		if ui.focusSyncPending {
 			ui.focusSyncPending = false
 			ui.pushFocusSymbol(symbol)
 		}
 		return
 	}
-	ui.focusSymbol = symbol
+	ui.setFocusSymbolState(symbol)
 	ui.focusSyncPending = false
 	ui.pushFocusSymbol(symbol)
 	ui.renderFlowAggregation()

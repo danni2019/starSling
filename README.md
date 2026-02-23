@@ -1,6 +1,12 @@
 # starSling
 
-`starSling` 是一个面向中国期货/期权市场的终端实时监控与量化分析 MVP。
+`starSling` 是一个面向中国期货/期权市场的终端实时监控、实时分析与交易辅助 MVP。
+
+项目定位聚焦盘中实时能力：
+
+- 以实时行情处理、实时分析、实时监控为核心主线
+- 后续演进方向优先为账户实时监控与风险看板，再到实时自动交易
+- 历史落盘/回放/回测不是当前项目主线目标（仅在明确必要时再评估）
 
 当前版本已经打通以下闭环：
 
@@ -10,6 +16,8 @@
 - 左上 symbol-level overview 看板（期货热度 + 期权 gamma inventory 分桶）
 - 两类实时派生分析 worker（`options_worker`、`unusual_worker`）
 - UI 交互筛选、阈值配置、焦点合约联动
+- `Settings` 全局参数配置与本地持久化（含实时生效链路）
+- Live 面板稳定性修复（异步启动、焦点/渲染去抖、终端日志污染修复）
 
 ## MVP 功能概览
 
@@ -50,6 +58,14 @@
 
 ### 4. 运行时辅助能力
 
+- 主菜单 `Settings`（全局参数）：
+  - `risk_free_rate`（默认 `0.01`）
+  - `days_in_year`（默认 `365`，范围 `1..370`）
+  - overview gamma bucket 边界（默认 `30/90`）
+- 全局参数保存后：
+  - gamma bucket 立即通过 router RPC 生效
+  - 若 Live 正在运行，仅重启 `options_worker` 载入新参数
+- Live 各面板 `Enter` 配置项支持本地持久化（`settings_<panel>`），下次进入 Live 自动恢复默认项
 - 配置管理（创建/编辑/删除/设为默认）
 - 本地 Python 运行时引导脚本（`scripts/bootstrap_python.sh`）
 - 语音播报（可选，依赖 `say`/`espeak`/`spd-say`）
@@ -115,11 +131,13 @@ go run ./cmd/starsling
 - `Live market data`
 - `Setup Python runtime`
 - `Config`
+- `Settings`
 - `Quit`
 
 Live 界面常用按键：
 
 - `Tab / Shift+Tab`：切换焦点面板
+- `← / →`：切换焦点面板（含 overview 区域）
 - `Enter`：打开当前面板设置（过滤、阈值、语音等）
 - `s`：切换市场排序方向
 - `Esc`：返回主菜单
@@ -135,6 +153,8 @@ Live 界面常用按键：
 - metadata 缓存目录（默认）：
   - macOS: `~/Library/Application Support/starsling/metadata`
   - Linux: `${XDG_CONFIG_HOME:-~/.config}/starsling/metadata`
+- 全局设置与 Live 面板偏好（默认）：
+  - `.../starsling/metadata/global_settings.json`
 - 本地 runtime：`runtime/<platform>/...`
 
 ## 项目结构（当前）
@@ -164,6 +184,12 @@ STARSLING_INTERNAL_DEBUG_UI=1 go run ./cmd/starsling
 ## 当前边界（MVP）
 
 - 暂未实现真实交易执行（下单、回报、持仓管理）
-- 暂未实现历史数据持久化与回放回测
+- 历史数据持久化与回放回测不属于当前主线范围
 - 策略注册与 session detector 仍是占位能力
 - 风险控制仍以展示与人工决策为主
+
+## 近期稳定性修复（2026-02）
+
+- 修复进入 Live 界面时的偶发/持续卡死问题（初始空表焦点、选择回调渲染风暴等）
+- 修复 Live 界面重复绘制堆叠与主屏污染问题（禁止 TUI 运行期间后台 slog 输出到终端）
+- 优化 Live 启动路径为异步执行，降低 UI 线程阻塞风险

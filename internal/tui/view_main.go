@@ -44,6 +44,9 @@ func (ui *UI) buildMainScreen() tview.Primitive {
 	ui.menu.AddItem("Config", "", 0, func() {
 		ui.setScreen(screenConfig)
 	})
+	ui.menu.AddItem("Settings", "", 0, func() {
+		ui.setScreen(screenSettings)
+	})
 	ui.menu.AddItem("Quit", "", 0, func() {
 		ui.app.Stop()
 	})
@@ -64,7 +67,7 @@ func (ui *UI) buildMainScreen() tview.Primitive {
 		AddItem(ui.titleView, titleHeight, 0, false).
 		AddItem(author, 1, 0, false).
 		AddItem(ui.divider, 1, 0, false).
-		AddItem(menuWrap, 6, 0, true).
+		AddItem(menuWrap, 7, 0, true).
 		AddItem(help, 1, 0, false)
 
 	root := tview.NewFlex().SetDirection(tview.FlexRow).

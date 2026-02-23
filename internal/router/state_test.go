@@ -157,6 +157,26 @@ func TestStateThresholdUpdate(t *testing.T) {
 	}
 }
 
+func TestStateOverviewGammaBucketUpdate(t *testing.T) {
+	state := NewState()
+	uiState := state.GetUIState()
+	if uiState.GammaBucketFrontDays != defaultGammaBucketFrontDays || uiState.GammaBucketMidDays != defaultGammaBucketMidDays {
+		t.Fatalf("unexpected default gamma buckets: front=%d mid=%d", uiState.GammaBucketFrontDays, uiState.GammaBucketMidDays)
+	}
+
+	state.SetOverviewGammaBuckets(20, 60)
+	uiState = state.GetUIState()
+	if uiState.GammaBucketFrontDays != 20 || uiState.GammaBucketMidDays != 60 {
+		t.Fatalf("unexpected updated gamma buckets: front=%d mid=%d", uiState.GammaBucketFrontDays, uiState.GammaBucketMidDays)
+	}
+
+	state.SetOverviewGammaBuckets(-1, 0)
+	uiState = state.GetUIState()
+	if uiState.GammaBucketFrontDays != defaultGammaBucketFrontDays || uiState.GammaBucketMidDays != defaultGammaBucketMidDays {
+		t.Fatalf("expected fallback gamma buckets after invalid update, got front=%d mid=%d", uiState.GammaBucketFrontDays, uiState.GammaBucketMidDays)
+	}
+}
+
 func TestUpdateUnusualEnrichesRowsWithGreeks(t *testing.T) {
 	state := NewState()
 	state.UpdateOptions(OptionsSnapshot{
@@ -325,7 +345,7 @@ func TestBuildOverviewRowsAggregatesFuturesAndOptions(t *testing.T) {
 		},
 	}
 
-	rows := buildOverviewRows(marketRows, optionsRows)
+	rows := buildOverviewRows(marketRows, optionsRows, defaultGammaBucketFrontDays, defaultGammaBucketMidDays)
 	if len(rows) != 2 {
 		t.Fatalf("expected 2 merged overview rows, got %d", len(rows))
 	}
@@ -402,7 +422,7 @@ func TestBuildOverviewRowsMergesOptionGammaWithCaseInsensitiveSymbolKey(t *testi
 		},
 	}
 
-	rows := buildOverviewRows(marketRows, optionsRows)
+	rows := buildOverviewRows(marketRows, optionsRows, defaultGammaBucketFrontDays, defaultGammaBucketMidDays)
 	if len(rows) != 1 {
 		t.Fatalf("expected one merged overview row, got %d", len(rows))
 	}
@@ -449,7 +469,7 @@ func TestBuildOverviewRowsBucketsGammaByTTEAndExcludesInvalidTTE(t *testing.T) {
 		{"ctp_contract": "IO-P-90", "symbol": "IF", "underlying": "IF2503", "option_type": "p", "tte": 90.0, "gamma": 5.0},
 	}
 
-	rows := buildOverviewRows(marketRows, optionsRows)
+	rows := buildOverviewRows(marketRows, optionsRows, defaultGammaBucketFrontDays, defaultGammaBucketMidDays)
 	if len(rows) != 1 {
 		t.Fatalf("expected one merged row, got %d", len(rows))
 	}

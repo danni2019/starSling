@@ -21,7 +21,8 @@ func run() int {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	logger := logging.New("INFO")
+	// TUI owns the terminal; suppress background slog output to avoid screen corruption.
+	logger := logging.NewDiscard("INFO")
 	routerState := router.NewState()
 	routerServer, err := router.Start(ctx, "127.0.0.1:0", routerState, logger)
 	if err != nil {

@@ -7,7 +7,10 @@ import (
 	"io"
 	"log/slog"
 	"os/exec"
+	"strconv"
 	"strings"
+
+	"github.com/danni2019/starSling/internal/settingsstore"
 )
 
 //go:embed options_worker.py
@@ -33,6 +36,14 @@ func startOptionsWorker(ctx context.Context, pythonPath string, routerAddr strin
 		scriptPath,
 		"--router_addr", strings.TrimSpace(routerAddr),
 	}
+	settings, settingsErr := settingsstore.Load()
+	if settingsErr != nil && logger != nil {
+		logger.Warn("load settings for options worker failed; using defaults", "error", settingsErr)
+	}
+	args = append(args,
+		"--risk_free_rate", strconv.FormatFloat(settings.RiskFreeRate, 'g', -1, 64),
+		"--days_in_year", strconv.Itoa(settings.DaysInYear),
+	)
 
 	cmdCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(cmdCtx, resolved, args...)

@@ -2708,6 +2708,77 @@ func TestBuildOverviewDisplayRowsSortsByOIChgAscending(t *testing.T) {
 	}
 }
 
+func TestStopLiveProcessCancelsInFlightStartupRequest(t *testing.T) {
+	ui := &UI{routerAddr: "127.0.0.1:19090"}
+
+	req, ok := ui.beginLiveStartupRequest()
+	if !ok {
+		t.Fatalf("expected startup request to begin")
+	}
+	if req.startCtx == nil {
+		t.Fatalf("expected startup request context")
+	}
+	if !ui.isLiveStartupRequestCurrent(req.seq) {
+		t.Fatalf("expected startup request seq=%d to be current", req.seq)
+	}
+	select {
+	case <-req.startCtx.Done():
+		t.Fatalf("startup request context canceled before stop")
+	default:
+	}
+
+	ui.stopLiveProcess()
+
+	if ui.isLiveStartupRequestCurrent(req.seq) {
+		t.Fatalf("expected startup request seq=%d to be invalidated after stop", req.seq)
+	}
+	select {
+	case <-req.startCtx.Done():
+	default:
+		t.Fatalf("expected stopLiveProcess to cancel in-flight startup request")
+	}
+}
+
+func TestApplyGlobalSettingsRuntimeDefersOptionsRestartDuringInFlightStartup(t *testing.T) {
+	ui := &UI{routerAddr: "127.0.0.1:19090"}
+
+	req, ok := ui.beginLiveStartupRequest()
+	if !ok {
+		t.Fatalf("expected startup request to begin")
+	}
+	if ui.consumeDeferredOptionsWorkerRestart() {
+		t.Fatalf("expected no deferred restart before settings save")
+	}
+
+	ui.applyGlobalSettingsRuntime(20, 60, true)
+
+	if !ui.consumeDeferredOptionsWorkerRestart() {
+		t.Fatalf("expected settings save to defer options restart during in-flight startup")
+	}
+	if ui.consumeDeferredOptionsWorkerRestart() {
+		t.Fatalf("expected deferred restart marker to be consumed once")
+	}
+
+	ui.completeLiveStartupRequest(req.seq)
+}
+
+func TestFocusSymbolForPollingUsesLocalAtomicSnapshot(t *testing.T) {
+	ui := &UI{}
+	if got := ui.focusSymbolForPolling(); got != "" {
+		t.Fatalf("expected empty polling focus before snapshot init, got %q", got)
+	}
+
+	ui.setFocusSymbolState(" IF ")
+	if got := ui.focusSymbolForPolling(); got != "IF" {
+		t.Fatalf("expected trimmed polling focus snapshot, got %q", got)
+	}
+
+	ui.setFocusSymbolState("")
+	if got := ui.focusSymbolForPolling(); got != "" {
+		t.Fatalf("expected polling focus snapshot to clear, got %q", got)
+	}
+}
+
 func testFloatPtr(v float64) *float64 {
 	return &v
 }
