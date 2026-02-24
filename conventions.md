@@ -117,7 +117,16 @@
 
 - `market`：过滤掉期权行
 - `curve/options/unusual/logs`：按当前状态返回（可为空）
-- options 在 router 侧按 `focus_symbol` 过滤
+- `options`：返回 router 当前完整 options 快照行集合（不在 router 侧按 `focus_symbol` 预过滤）
+- 说明：右中 `Options T-quote` 由 TUI 使用 metadata-aware 逻辑按 focus futures contract 做 contract-chain 筛链（准确性优先）
+
+### 5.8 Focus Token 语义约定（历史字段名兼容）
+
+- `focus_symbol` 是历史字段名；运行时真实语义是“watchlist 当前焦点的 futures contract token”（例如 `cu2604`）
+- 该字段名保留用于兼容现有 RPC/状态结构，但新代码/注释应优先明确写作 `focusContract`（局部变量命名）
+- 不同消费者的语义不同（必须区分）：
+  - 右中 `Options T-quote`：按 focus futures contract 做 contract-chain 匹配
+  - 右上 `Curve`：从 focus futures contract 推导 symbol 分组（symbol-level），必要时允许 fallback
 
 ---
 
@@ -212,6 +221,17 @@
 - `underlying`: 期权标的合约
 - `strike`: 行权价
 
+### 10.2.0 术语词典（强烈建议统一使用）
+
+- `symbol`：品种级业务标识（例如 `cu`）
+- `future contract`：完整期货合约代码（例如 `cu2604`）
+- `option contract`：完整期权合约代码（例如 `cu2604-C-20000`）
+- `underlying contract`：期权对应的标的期货合约（例如 `cu2604`）
+- `contract_root`（代码中常见 `root` / `contractRoot` / `_contract_root`）：
+  - 含义：从合约字符串提取的字母前缀（lexical prefix），例如 `cu2604 -> cu`
+  - 用途：仅作为 fallback / 推断辅助 token
+  - 约束：不是业务主键，不得默认替代 `symbol` 或 `future contract`
+
 ### 10.2.1 合约映射优先级（强制）
 
 - 所有以下转换都必须先查 `contract` metadata（`InstrumentID/ProductID/UnderlyingInstrID`）：
@@ -220,6 +240,7 @@
   - `underlying contract -> symbol`
   - `future contract -> symbol`
 - 仅当 metadata 缺失该合约映射时，才允许回退到字符串推断（如按合约前缀或 C/P 位置解析）。
+- 字符串推断若使用 `contract_root`，必须明确其为 fallback；不能把 `contract_root` 等同于业务 `symbol` 用于 contract-chain 精确匹配。
 
 ### 10.3 open_ctp 枚举字段映射（必须遵守）
 
@@ -265,6 +286,8 @@
 - X 轴：期货合约升序
 - forward：期货 `last`
 - VIX：对应期权链中指定 delta 区间 IV 的均值（当前实现以 worker 口径为准）
+- 焦点语义：消费 watchlist 的 focus futures contract，但展示按 symbol 分组（非 contract-chain）
+- fallback：当 metadata/symbol 解析失败时，可使用 `contract_root` 作为分组推导的最后 fallback（仅限 curve 分组）
 
 ### 11.2 Options（右中）
 
@@ -272,6 +295,8 @@
 - IV：基于报价（优先 vwap/mid/last fallback）反推
 - Volume：当前成交量
 - 期权类型口径：展示可保留数据源值，但计算必须使用内部标准 `c/p`（`open_ctp: '1'/'2' -> c/p`）
+- 焦点语义：按 watchlist focus 的 futures contract 匹配对应期权链（contract-chain specific）
+- 禁止：将右中主逻辑退化为仅按 `symbol` 或 `contract_root` 宽匹配（会混入其它月份期权链）
 
 ### 11.3 Unusual（右下）
 
@@ -307,4 +332,4 @@
 ## 13. 当前已知待完善项（约定保留）
 
 - `UI/live_md` 侧指数退避重连尚未统一到 worker 水平。
-- `risk_free_rate` 当前固定为 `0.01`，后续应进入统一配置并支持持久化。
+- 全局分析参数已支持 `Settings` 持久化（如 `risk_free_rate` / `days_in_year` / gamma bucket 边界）；后续可继续扩展更多分析口径参数。

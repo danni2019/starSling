@@ -86,7 +86,7 @@ func TestGetViewSnapshotReusesCachedOverviewWhenInputsUnchanged(t *testing.T) {
 	}
 }
 
-func TestGetViewSnapshotFiltersOptionRowsButLatestKeepsAll(t *testing.T) {
+func TestGetViewSnapshotFiltersMarketRowsButLatestKeepsAll(t *testing.T) {
 	state := NewState()
 	state.UpdateMarket(MarketSnapshot{
 		Rows: []map[string]any{
@@ -109,6 +109,24 @@ func TestGetViewSnapshotFiltersOptionRowsButLatestKeepsAll(t *testing.T) {
 	}
 	if len(latest.Rows) != 2 {
 		t.Fatalf("expected latest market snapshot to keep full rows, got %d", len(latest.Rows))
+	}
+}
+
+func TestGetViewSnapshotKeepsFullOptionsRowsForTUIContractChainFiltering(t *testing.T) {
+	state := NewState()
+	state.UpdateOptions(OptionsSnapshot{
+		Rows: []map[string]any{
+			{"ctp_contract": "cu2604C70000", "underlying": "cu2604", "symbol": "CU"},
+			// This row intentionally does not exact-match the focus token on raw
+			// fields; TUI metadata-aware filtering may still need it to resolve the
+			// correct contract chain. Router must not pre-truncate it.
+			{"ctp_contract": "mo2404C5000", "underlying": "IM2404X", "symbol": "MO"},
+		},
+	})
+
+	view := state.GetViewSnapshot("IM2404")
+	if len(view.Options.Rows) != 2 {
+		t.Fatalf("expected router view snapshot to keep full options rows for TUI filtering, got %d", len(view.Options.Rows))
 	}
 }
 

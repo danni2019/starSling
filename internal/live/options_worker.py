@@ -389,9 +389,7 @@ def _replace_contract_root(contract, symbol):
         return None
     return symbol + token[len(root):]
 
-
 CONTRACT_METADATA_CACHE = _ContractMetadataCache()
-CONTRACT_METADATA_CACHE.load()
 
 
 def _resolve_option_underlying(contract, existing_underlying):
@@ -731,6 +729,9 @@ def _contract_root(contract):
     return matched.group(0)
 
 
+CONTRACT_METADATA_CACHE.load()
+
+
 def _option_row_matches_focus(row, focus_symbol):
     focus = _norm_token(focus_symbol)
     if focus is None:
@@ -979,6 +980,10 @@ def build_curve_snapshot(market_rows, option_rows, focus_symbol=None) -> dict:
             focus_group = _norm_token(focus_row.get("resolved_symbol_norm"))
         if focus_group is None or focus_group == "":
             focus_group = _norm_token(_resolve_contract_symbol(focus_symbol, None))
+        if focus_group is None or focus_group == "":
+            # curve is a symbol-level view; root fallback is acceptable here as a
+            # last resort group token when metadata-based symbol resolution fails
+            focus_group = _contract_root(focus_symbol)
         if focus_group is not None and focus_group != "":
             futures_df = futures_df[futures_df["resolved_symbol_norm"] == focus_group]
         else:

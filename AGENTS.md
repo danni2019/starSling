@@ -59,6 +59,7 @@
   - record `what happened`, `root cause`, `fix`, and `prevention rule` in `model_action_plan.md`;
   - if the prevention can be generalized, add/update a rule in `AGENTS.md` immediately in the same change set.
 - When adding or changing contract-string fallback parsers, include delimiter-boundary test cases (e.g., `-C-`/`-P-`) and validate extracted tokens do not retain separators.
+- After editing an embedded Python worker (`internal/live/*.py`), run an import-time sanity check (e.g., `python3 internal/live/<worker>.py --help`) in addition to syntax checks, to catch top-level initialization/runtime ordering errors that `py_compile` will not catch.
 - In every task, proactively assess whether project-structure optimization would reduce future friction; if yes, provide a refactor proposal and an action plan before ending the task.
 
 ## Continuous Improvement Requirements

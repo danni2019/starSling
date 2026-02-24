@@ -93,8 +93,8 @@ func TestRouterMarketSnapshotRoundTrip(t *testing.T) {
 	if err := client.Call(context.Background(), "router.get_view_snapshot", GetViewSnapshotParams{FocusSymbol: "cu2604"}, &filtered); err != nil {
 		t.Fatalf("get_view_snapshot with focus: %v", err)
 	}
-	if len(filtered.Options.Rows) != 1 {
-		t.Fatalf("expected 1 option row for focus, got %d", len(filtered.Options.Rows))
+	if len(filtered.Options.Rows) != 2 {
+		t.Fatalf("expected full options rows (TUI applies contract-chain filtering), got %d", len(filtered.Options.Rows))
 	}
 	if err := client.Notify(context.Background(), "curve.snapshot", CurveSnapshot{
 		SchemaVersion: 1,

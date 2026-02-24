@@ -101,9 +101,11 @@ func (s *State) UpdateMarket(snapshot MarketSnapshot) {
 func (s *State) GetViewSnapshot(focusSymbol string) ViewSnapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if strings.TrimSpace(focusSymbol) == "" {
-		focusSymbol = s.focusSymbol
-	}
+	// `focusSymbol` is a historical parameter name whose runtime meaning is the
+	// watchlist focus futures-contract token. Router intentionally does not use it
+	// to pre-filter options rows; the TUI applies metadata-aware contract-chain
+	// filtering for correctness.
+	_ = focusSymbol
 
 	market := s.market
 	market.Rows = filterNonOptionMarketRows(s.market.Rows)
@@ -111,7 +113,9 @@ func (s *State) GetViewSnapshot(focusSymbol string) ViewSnapshot {
 		market.Stale = true
 	}
 	options := s.options
-	options.Rows = filterOptionsRows(s.options.Rows, focusSymbol)
+	// Keep full options rows in the view snapshot.
+	// The TUI options panel applies metadata-aware contract-chain filtering, which
+	// is more accurate than the router's raw-field exact-match helper.
 	if !s.lastOptions.IsZero() && time.Since(s.lastOptions) > staleAfter {
 		options.Stale = true
 	}
