@@ -286,6 +286,8 @@
 - X 轴：期货合约升序
 - forward：期货 `last`
 - VIX：对应期权链中指定 delta 区间 IV 的均值（当前实现以 worker 口径为准）
+- skew：`skew = iv25 - atm_iv`，`atm_iv` 取 `abs(delta) in [0.45, 0.55]`
+- iv25 取样：默认 `abs(delta) in [0.2, 0.3]`；若某一侧（call 或 put）该区间无有效样本，则仅该侧先回退到 `abs(delta) in [0.1, 0.4]`；若仍无有效样本，再仅该侧回退到 `abs(delta) in [0, 0.5]`
 - 焦点语义：消费 watchlist 的 focus futures contract，但展示按 symbol 分组（非 contract-chain）
 - fallback：当 metadata/symbol 解析失败时，可使用 `contract_root` 作为分组推导的最后 fallback（仅限 curve 分组）
 

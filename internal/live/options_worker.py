@@ -756,6 +756,10 @@ def _compute_side_skew(chain_df):
         return None
     atm_iv = _mean_iv_in_abs_delta_band(chain_df, 0.45, 0.55)
     iv25 = _mean_iv_in_abs_delta_band(chain_df, 0.2, 0.3)
+    if iv25 is None:
+        iv25 = _mean_iv_in_abs_delta_band(chain_df, 0.1, 0.4)
+    if iv25 is None:
+        iv25 = _mean_iv_in_abs_delta_band(chain_df, 0.0, 0.5)
     if atm_iv is None or iv25 is None:
         return None
     return _sanitize_number(iv25 - atm_iv)
