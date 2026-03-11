@@ -151,7 +151,6 @@ func (ui *UI) applyPersistedSettings(cfg settingsstore.Settings) {
 	ui.unusualRatioThreshold = cfg.Unusual.TurnoverRatioThreshold
 	ui.unusualOIRatioThreshold = cfg.Unusual.OIRatioThreshold
 	ui.unusualFilterSymbol = cfg.Unusual.Symbol
-	ui.unusualFilterContract = cfg.Unusual.Contract
 
 	selectedOnly, focusedOnly := normalizeExclusiveFlowFilters(cfg.Flow.OnlySelected, cfg.Flow.OnlyFocused)
 	ui.flowOnlySelectedContracts = selectedOnly
@@ -240,7 +239,7 @@ func (ui *UI) saveUnusualSettingsToStore() {
 		cfg.Unusual.TurnoverRatioThreshold = ui.unusualRatioThreshold
 		cfg.Unusual.OIRatioThreshold = ui.unusualOIRatioThreshold
 		cfg.Unusual.Symbol = strings.TrimSpace(ui.unusualFilterSymbol)
-		cfg.Unusual.Contract = strings.TrimSpace(ui.unusualFilterContract)
+		cfg.Unusual.Contract = ""
 	})
 	if err != nil {
 		ui.appendLiveLogLine("save unusual settings failed: " + err.Error())

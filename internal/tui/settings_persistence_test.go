@@ -204,7 +204,7 @@ func TestApplyPersistedSettingsPrefersArbitragePairsOverLegacyFormula(t *testing
 	}
 }
 
-func TestApplyPersistedSettingsLoadsUnusualSymbolContractFilters(t *testing.T) {
+func TestApplyPersistedSettingsLoadsUnusualSymbolFilterOnly(t *testing.T) {
 	ui := &UI{}
 	cfg := settingsstore.Default()
 	cfg.Unusual.Symbol = "cu,ag"
@@ -214,8 +214,5 @@ func TestApplyPersistedSettingsLoadsUnusualSymbolContractFilters(t *testing.T) {
 
 	if ui.unusualFilterSymbol != "cu,ag" {
 		t.Fatalf("unexpected unusual symbol filter: %q", ui.unusualFilterSymbol)
-	}
-	if ui.unusualFilterContract != "cu2604,ag2604" {
-		t.Fatalf("unexpected unusual contract filter: %q", ui.unusualFilterContract)
 	}
 }

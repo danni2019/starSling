@@ -183,7 +183,6 @@ type UI struct {
 	unusualRatioThreshold     float64
 	unusualOIRatioThreshold   float64
 	unusualFilterSymbol       string
-	unusualFilterContract     string
 	liveLogLines              []string
 	flowWindowSeconds         int
 	flowMinAnalysisSeconds    int
@@ -607,11 +606,8 @@ func (ui *UI) openUnusualThresholdSettings() {
 		SetLabel("OI Ratio >= ").
 		SetText(strconv.FormatFloat(ui.unusualOIRatioThreshold, 'f', 4, 64))
 	symbolInput := tview.NewInputField().
-		SetLabel("Filter Symbol(csv): ").
+		SetLabel("Filter Symbol(, separated): ").
 		SetText(strings.TrimSpace(ui.unusualFilterSymbol))
-	contractInput := tview.NewInputField().
-		SetLabel("Filter Contract(csv): ").
-		SetText(strings.TrimSpace(ui.unusualFilterContract))
 	hint := tview.NewTextView().
 		SetTextColor(colorMuted).
 		SetText(" ")
@@ -620,8 +616,7 @@ func (ui *UI) openUnusualThresholdSettings() {
 		AddFormItem(chgInput).
 		AddFormItem(ratioInput).
 		AddFormItem(oiRatioInput).
-		AddFormItem(symbolInput).
-		AddFormItem(contractInput)
+		AddFormItem(symbolInput)
 	form.SetBorder(true).SetTitle("Unusual thresholds")
 	form.SetBorderColor(colorBorder).SetTitleColor(colorBorder)
 	form.SetBackgroundColor(colorBackground)
@@ -647,7 +642,6 @@ func (ui *UI) openUnusualThresholdSettings() {
 		hint.SetText(" ")
 		ui.appendLiveLogLine(fmt.Sprintf("unusual thresholds updated: chg>=%.0f turnover_ratio>=%.2f%% oi_ratio>=%.2f%%", chg, ratio*100, oiRatio*100))
 		ui.unusualFilterSymbol = strings.TrimSpace(symbolInput.GetText())
-		ui.unusualFilterContract = strings.TrimSpace(contractInput.GetText())
 		ui.renderUnusualTradesFromState()
 		ui.saveUnusualSettingsToStore()
 		ui.closeDrilldown()
@@ -1254,7 +1248,7 @@ func (ui *UI) applyUnusualSnapshot(snapshot router.UnusualSnapshot) {
 		if ui.unusualRawRows == nil {
 			ui.unusualRawRows = []map[string]any{}
 		}
-		filteredRows := filterUnusualRows(ui.unusualRawRows, ui.unusualFilterSymbol, ui.unusualFilterContract)
+		filteredRows := filterUnusualRows(ui.unusualRawRows, ui.unusualFilterSymbol, ui.metadata)
 		fillTradesTable(ui.liveTrades, convertUnusualTrades(filteredRows))
 		if !ui.useArbMonitor {
 			ui.ingestFlowEvents(filteredRows)
@@ -1272,29 +1266,38 @@ func (ui *UI) renderUnusualTradesFromState() {
 	if ui.liveTrades == nil {
 		return
 	}
-	filteredRows := filterUnusualRows(ui.unusualRawRows, ui.unusualFilterSymbol, ui.unusualFilterContract)
+	filteredRows := filterUnusualRows(ui.unusualRawRows, ui.unusualFilterSymbol, ui.metadata)
 	fillTradesTable(ui.liveTrades, convertUnusualTrades(filteredRows))
 }
 
-func filterUnusualRows(rows []map[string]any, symbolCSV, contractCSV string) []map[string]any {
+func filterUnusualRows(rows []map[string]any, symbolCSV string, resolver contractResolver) []map[string]any {
 	symbolTokens := csvTokens(symbolCSV)
-	contractTokens := csvTokens(contractCSV)
-	if len(symbolTokens) == 0 && len(contractTokens) == 0 {
+	if len(symbolTokens) == 0 {
 		return rows
 	}
 	out := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
-		rowSymbol := strings.TrimSpace(asString(row["symbol"]))
-		rowContract := strings.TrimSpace(asString(row["ctp_contract"]))
-		if !tokenMatch(symbolTokens, rowSymbol) {
-			continue
-		}
-		if !tokenMatch(contractTokens, rowContract) {
+		contract := strings.TrimSpace(asString(row["ctp_contract"]))
+		underlying := strings.TrimSpace(asString(row["underlying"]))
+		symbol := strings.TrimSpace(asString(row["symbol"]))
+		if !tokenMatchCandidates(symbolTokens, focusMatchCandidates(contract, underlying, symbol, resolver)) {
 			continue
 		}
 		out = append(out, row)
 	}
 	return out
+}
+
+func tokenMatchCandidates(tokens map[string]struct{}, candidates []string) bool {
+	if len(tokens) == 0 {
+		return true
+	}
+	for _, candidate := range candidates {
+		if _, ok := tokens[normalizeToken(candidate)]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func (ui *UI) applyRouterLogs(snapshot router.LogSnapshot) {

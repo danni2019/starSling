@@ -506,14 +506,14 @@ func TestApplyUnusualSnapshotResetsFlowAggregationOnSeqRegression(t *testing.T) 
 	}
 }
 
-func TestFilterUnusualRowsSupportsCSVFilters(t *testing.T) {
+func TestFilterUnusualRowsSupportsSymbolCSVFilters(t *testing.T) {
 	rows := []map[string]any{
 		{"symbol": "cu", "ctp_contract": "cu2604C72000"},
 		{"symbol": "ag", "ctp_contract": "ag2604P5200"},
 		{"symbol": "zn", "ctp_contract": "zn2604C23000"},
 	}
 
-	filtered := filterUnusualRows(rows, "CU, ag", "cu2604c72000, ag2604p5200")
+	filtered := filterUnusualRows(rows, "CU, ag", nil)
 	if len(filtered) != 2 {
 		t.Fatalf("expected 2 rows after csv filter, got %d", len(filtered))
 	}
@@ -525,12 +525,44 @@ func TestFilterUnusualRowsSupportsCSVFilters(t *testing.T) {
 	}
 }
 
-func TestApplyUnusualSnapshotAppliesSymbolContractFiltersToTradesTable(t *testing.T) {
+func TestFilterUnusualRowsMatchesByContractRootAndResolverSymbol(t *testing.T) {
+	rows := []map[string]any{
+		{"symbol": "", "ctp_contract": "sc2605C420"},
+		{"symbol": "", "ctp_contract": "px2609P3000"},
+		{"symbol": "", "ctp_contract": "zn2604C23000"},
+		{"symbol": "mo", "ctp_contract": "mo2604-C-8000"},
+	}
+
+	filtered := filterUnusualRows(rows, "sc,px", nil)
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2 rows matched by contract roots, got %d", len(filtered))
+	}
+	if got := strings.TrimSpace(asString(filtered[0]["ctp_contract"])); got != "sc2605C420" {
+		t.Fatalf("unexpected first contract matched by root: %q", got)
+	}
+	if got := strings.TrimSpace(asString(filtered[1]["ctp_contract"])); got != "px2609P3000" {
+		t.Fatalf("unexpected second contract matched by root: %q", got)
+	}
+
+	resolver := testContractResolver{
+		contractSymbol: map[string]string{
+			"mo2604-c-8000": "IM",
+		},
+	}
+	filtered = filterUnusualRows(rows, "im", resolver)
+	if len(filtered) != 1 {
+		t.Fatalf("expected resolver symbol mapping to match one row, got %d", len(filtered))
+	}
+	if got := strings.TrimSpace(asString(filtered[0]["ctp_contract"])); got != "mo2604-C-8000" {
+		t.Fatalf("unexpected resolver-matched contract: %q", got)
+	}
+}
+
+func TestApplyUnusualSnapshotAppliesSymbolFiltersToTradesTable(t *testing.T) {
 	ui := &UI{
-		liveTrades:            tview.NewTable(),
-		useArbMonitor:         true,
-		unusualFilterSymbol:   "cu,ag",
-		unusualFilterContract: "cu2604c72000,ag2604p5200",
+		liveTrades:          tview.NewTable(),
+		useArbMonitor:       true,
+		unusualFilterSymbol: "cu,ag",
 	}
 	rows := []map[string]any{
 		{"symbol": "cu", "ctp_contract": "cu2604C72000", "cp": "c"},
@@ -546,14 +578,17 @@ func TestApplyUnusualSnapshotAppliesSymbolContractFiltersToTradesTable(t *testin
 	if len(ui.unusualRawRows) != 4 {
 		t.Fatalf("expected unusual raw rows to cache all 4 items, got %d", len(ui.unusualRawRows))
 	}
-	if got := ui.liveTrades.GetRowCount(); got != 3 {
-		t.Fatalf("expected header + 2 filtered rows, got row count %d", got)
+	if got := ui.liveTrades.GetRowCount(); got != 4 {
+		t.Fatalf("expected header + 3 filtered rows, got row count %d", got)
 	}
 	if got := strings.TrimSpace(ui.liveTrades.GetCell(1, 1).Text); got != "cu2604C72000" {
 		t.Fatalf("unexpected first filtered table contract: %q", got)
 	}
 	if got := strings.TrimSpace(ui.liveTrades.GetCell(2, 1).Text); got != "ag2604P5200" {
 		t.Fatalf("unexpected second filtered table contract: %q", got)
+	}
+	if got := strings.TrimSpace(ui.liveTrades.GetCell(3, 1).Text); got != "cu2605C72000" {
+		t.Fatalf("unexpected third filtered table contract: %q", got)
 	}
 }
 

@@ -756,6 +756,90 @@ Approved by user in-thread ("确认执行").
 
 ---
 
+# Task: Arb Monitor Use Raw Market Rows (Decouple From Left-Mid Display Filter)
+
+## Request Summary
+Fix arb monitor so formula evaluation is based on raw market snapshot rows instead of left-middle displayed rows.
+
+Current issue:
+- Arb currently reads `ui.marketRows`, which is post-filtered by left-middle filter settings.
+- Contracts excluded from left-middle display become unavailable to arb evaluation.
+
+Target behavior:
+- Arb evaluation should use original market snapshot data (`ui.marketRawRows`) so it can access all contracts in feed scope.
+- Left-middle display filter should only affect left-middle table, not arb calculations.
+
+## Implementation Plan
+1. Introduce raw-row price-map builders for arb.
+- File: `internal/tui/arbitrage.go`
+- Add helper(s) to build price maps directly from `[]map[string]any` raw rows for:
+  - `last`, `high`, `low`, `open`, `pre_close`, `pre_settlement`
+- Parse numeric values using existing optional-float parser patterns (`asOptionalFloat` compatible logic).
+- Contract key uses normalized `ctp_contract` from raw row.
+
+2. Switch arb monitor runtime evaluation source.
+- File: `internal/tui/arbitrage_manager.go`
+- In `renderArbitrageMonitor`, build all metric maps from `ui.marketRawRows` first.
+- If `ui.marketRawRows` is empty but `ui.marketRows` exists (edge fallback), keep current row-based map path as fallback.
+- Keep existing realtime/once-capture semantics unchanged:
+  - realtime: `value/high/low`
+  - once-capture: `open/pre_close/pre_settle`
+
+3. Keep display logic unchanged.
+- No changes to left-middle filters or table rendering.
+- No settings schema changes.
+
+## Test Plan
+1. Add targeted regression test in `internal/tui/arbitrage_ui_test.go`.
+- Construct UI state where:
+  - `marketRawRows` contains contracts A and B.
+  - `marketRows` contains only contract A (simulating left-middle filter).
+  - formula requires A and B.
+- Expect arb evaluation to be `READY` with correct computed value (proves raw rows are used).
+
+2. Keep existing arb tests passing.
+- Re-run key tests for:
+  - open/pre-close/pre-settle once-capture
+  - high/low realtime refresh
+  - table column order.
+
+3. Run validation:
+- `go test ./internal/tui -run 'TestRenderArbitrageMonitor.*|TestBuildMarketPriceMaps.*'`
+- `go test ./...`
+
+## Risks And Mitigations
+- Risk: raw rows may include contracts with missing numeric fields.
+- Mitigation: preserve current map behavior (skip non-numeric values) and existing missing-contract semantics.
+
+- Risk: raw rows could be stale while filtered rows are fresh during transition.
+- Mitigation: both derive from the same market snapshot apply path; fallback to `marketRows` only when raw rows are empty.
+
+## Rollback Plan
+1. Revert arb manager back to `ui.marketRows` based maps.
+2. Revert raw-row map helper additions.
+3. Re-run `go test ./internal/tui` and `go test ./...`.
+
+## Structure Optimization Assessment
+Problem:
+Arb evaluation currently depends on a UI projection (`marketRows`) rather than a source-of-truth data set, causing hidden coupling to display filters.
+
+Refactor Direction:
+Use source-of-truth `marketRawRows` for calculation paths and keep `marketRows` strictly as presentation data.
+
+Action Plan:
+1. Add raw-row map builders in arb module.
+2. Switch arb manager to raw rows with safe fallback.
+3. Add regression proving left-middle filtering no longer affects arb.
+
+Validation:
+- `go test ./internal/tui`
+- `go test ./...`
+
+## Approval Gate
+Approved by user in-thread ("确认").
+
+---
+
 # Task: Right-Bottom Unusual Panel Symbol/Contract Multi-Filter
 
 ## Request Summary
@@ -835,3 +919,84 @@ No additional structure refactor required for this increment; this is a focused 
 
 ## Approval Gate
 Approved by user in-thread ("OK，批准执行这两项").
+
+---
+
+# Task: Remove Filter Contract + Fix Filter Symbol Association in Right-Bottom Panel
+
+## Request Summary
+1. Remove `Filter Contract` from right-bottom unusual settings.
+2. Fix `Filter Symbol` so inputs like `sc` or `sc,px` can correctly filter corresponding option/futures rows.
+
+## Current Baseline Findings
+- `openUnusualThresholdSettings()` still shows both inputs:
+  - `Filter Symbol(csv):`
+  - `Filter Contract(csv):`
+- `filterUnusualRows(rows, symbolCSV, contractCSV)` currently does exact token match on:
+  - `row["symbol"]`
+  - `row["ctp_contract"]`
+- Symbol filtering does not reuse existing contract normalization/mapping path (`contract + underlying + symbol` candidate matching), so symbol-only filters can fail when raw `symbol` is missing/non-normalized.
+
+## Implementation Plan
+1. Remove `Filter Contract` from UI and runtime filtering path.
+- In `internal/tui/app.go`, remove contract input item from `openUnusualThresholdSettings()`.
+- Apply action only updates `ui.unusualFilterSymbol`.
+- Update unusual snapshot/render callsites to stop passing/using contract filter.
+
+2. Rework unusual filtering into symbol-only robust matching.
+- Change `filterUnusualRows` signature to `filterUnusualRows(rows []map[string]any, symbolCSV string, resolver contractResolver)`.
+- For each row, evaluate symbol filter tokens against normalized candidates built from:
+  - `ctp_contract`
+  - `underlying`
+  - `symbol`
+- Reuse existing `focusMatchCandidates(...)` + resolver (`ui.metadata`) to ensure cross-panel consistent association behavior.
+- Keep exact token matching semantics (case-insensitive, trimmed, comma-separated).
+
+3. Persistence behavior (backward-compatible).
+- Stop loading contract filter into UI runtime state.
+- On save, keep writing `cfg.Unusual.Symbol` and force `cfg.Unusual.Contract = ""` to clear legacy value.
+- Keep settings schema unchanged for compatibility with existing config files.
+
+4. Tests update.
+- `internal/tui/app_test.go`:
+  - replace dual-filter tests with symbol-only tests.
+  - add regression case proving symbol filter can match via underlying/contract-derived symbol (e.g. `sc`, `sc,px`).
+- `internal/tui/settings_persistence_test.go`:
+  - update unusual settings load/save assertions to symbol-only runtime behavior.
+- Keep `internal/settingsstore` schema tests stable (no schema deletion in this task).
+
+## Test Plan
+1. `go test ./internal/tui -run 'Unusual|FilterUnusual'`
+2. `go test ./internal/tui`
+3. `go test ./...`
+
+## Risks And Mitigations
+- Risk: token matching may become too broad.
+  - Mitigation: still require exact token equality against normalized candidate list (no fuzzy match).
+- Risk: legacy contract filter values remain in local config.
+  - Mitigation: save path explicitly clears contract filter value.
+
+## Rollback Plan
+1. Restore `Filter Contract` input in unusual settings form.
+2. Restore old `filterUnusualRows(rows, symbolCSV, contractCSV)` API and callsites.
+3. Restore persistence load/save behavior for contract filter.
+4. Re-run `go test ./internal/tui` and `go test ./...`.
+
+## Structure Optimization Assessment
+Problem:
+- Filtering semantics are split across simple field matchers and normalized identity matchers, leading to inconsistent UX across panels.
+
+Refactor Direction:
+- Introduce a shared row identity matching helper (contract/underlying/symbol normalization) reused by market/options/unusual filters.
+
+Action Plan:
+1. This task: fix unusual filter by reusing existing normalization helper.
+2. Follow-up task: extract shared matcher utility and migrate duplicated matching paths.
+3. Add cross-panel consistency tests for identical symbol inputs.
+
+Validation:
+- `go test ./internal/tui`
+- Manual check for inputs: `sc`, `sc,px`, mixed case, and empty filter.
+
+## Approval Gate
+Approved by user in-thread ("确认").
