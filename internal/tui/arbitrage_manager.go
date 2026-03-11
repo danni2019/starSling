@@ -224,12 +224,20 @@ func (ui *UI) renderArbitrageMonitor() {
 		fillArbitrageTable(ui.liveFlow, nil)
 		return
 	}
-	lastPrices := buildMarketLastPriceMap(ui.marketRows)
-	openPrices := buildMarketOpenPriceMap(ui.marketRows)
-	highPrices := buildMarketHighPriceMap(ui.marketRows)
-	lowPrices := buildMarketLowPriceMap(ui.marketRows)
-	preClosePrices := buildMarketPreClosePriceMap(ui.marketRows)
-	preSettlePrices := buildMarketPreSettlePriceMap(ui.marketRows)
+	lastPrices := buildRawMarketLastPriceMap(ui.marketRawRows)
+	openPrices := buildRawMarketOpenPriceMap(ui.marketRawRows)
+	highPrices := buildRawMarketHighPriceMap(ui.marketRawRows)
+	lowPrices := buildRawMarketLowPriceMap(ui.marketRawRows)
+	preClosePrices := buildRawMarketPreClosePriceMap(ui.marketRawRows)
+	preSettlePrices := buildRawMarketPreSettlePriceMap(ui.marketRawRows)
+	if len(ui.marketRawRows) == 0 && len(ui.marketRows) > 0 {
+		lastPrices = buildMarketLastPriceMap(ui.marketRows)
+		openPrices = buildMarketOpenPriceMap(ui.marketRows)
+		highPrices = buildMarketHighPriceMap(ui.marketRows)
+		lowPrices = buildMarketLowPriceMap(ui.marketRows)
+		preClosePrices = buildMarketPreClosePriceMap(ui.marketRows)
+		preSettlePrices = buildMarketPreSettlePriceMap(ui.marketRows)
+	}
 	rows := make([]ArbitrageMonitorRow, 0, len(ui.arbMonitors))
 	for idx := range ui.arbMonitors {
 		monitor := &ui.arbMonitors[idx]

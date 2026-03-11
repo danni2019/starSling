@@ -463,6 +463,25 @@ func buildMarketPriceMap(rows []MarketRow, valueFn func(MarketRow) string) map[s
 	return out
 }
 
+func buildRawMarketPriceMap(rows []map[string]any, key string) map[string]float64 {
+	out := make(map[string]float64, len(rows))
+	if strings.TrimSpace(key) == "" {
+		return out
+	}
+	for _, row := range rows {
+		symbol := normalizeToken(asString(row["ctp_contract"]))
+		if symbol == "" {
+			continue
+		}
+		value, ok := asOptionalFloat(row[key])
+		if !ok || math.IsNaN(value) || math.IsInf(value, 0) {
+			continue
+		}
+		out[symbol] = value
+	}
+	return out
+}
+
 func buildMarketLastPriceMap(rows []MarketRow) map[string]float64 {
 	return buildMarketPriceMap(rows, func(row MarketRow) string { return row.Last })
 }
@@ -485,4 +504,28 @@ func buildMarketPreClosePriceMap(rows []MarketRow) map[string]float64 {
 
 func buildMarketPreSettlePriceMap(rows []MarketRow) map[string]float64 {
 	return buildMarketPriceMap(rows, func(row MarketRow) string { return row.PreSettle })
+}
+
+func buildRawMarketLastPriceMap(rows []map[string]any) map[string]float64 {
+	return buildRawMarketPriceMap(rows, "last")
+}
+
+func buildRawMarketHighPriceMap(rows []map[string]any) map[string]float64 {
+	return buildRawMarketPriceMap(rows, "high")
+}
+
+func buildRawMarketLowPriceMap(rows []map[string]any) map[string]float64 {
+	return buildRawMarketPriceMap(rows, "low")
+}
+
+func buildRawMarketOpenPriceMap(rows []map[string]any) map[string]float64 {
+	return buildRawMarketPriceMap(rows, "open")
+}
+
+func buildRawMarketPreClosePriceMap(rows []map[string]any) map[string]float64 {
+	return buildRawMarketPriceMap(rows, "pre_close")
+}
+
+func buildRawMarketPreSettlePriceMap(rows []map[string]any) map[string]float64 {
+	return buildRawMarketPriceMap(rows, "pre_settlement")
 }

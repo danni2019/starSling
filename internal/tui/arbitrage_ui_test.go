@@ -301,3 +301,30 @@ func TestOpenArbitrageMonitorManagerKeepsDrilldownForBatchOps(t *testing.T) {
 		t.Fatalf("expected manager to keep drilldown screen for batch ops, got %q", ui.currentScreen())
 	}
 }
+
+func TestRenderArbitrageMonitorUsesRawMarketRowsNotFilteredDisplayRows(t *testing.T) {
+	ui := &UI{
+		useArbMonitor: true,
+		liveFlow:      tview.NewTable(),
+		marketRawRows: []map[string]any{
+			{"ctp_contract": "ma605", "last": 2500.0, "high": 2550.0, "low": 2300.0, "open": 2400.0, "pre_close": 2450.0, "pre_settlement": 2460.0},
+			{"ctp_contract": "eg2605", "last": 2000.0, "high": 2050.0, "low": 1700.0, "open": 1900.0, "pre_close": 1950.0, "pre_settlement": 1960.0},
+		},
+		// Simulate left-middle table already filtered to show only MA.
+		marketRows: []MarketRow{
+			{Symbol: "ma605", Last: "2500", High: "2550", Low: "2300", Open: "2400", PreClose: "2450", PreSettle: "2460"},
+		},
+	}
+	ui.setArbitrageFormula("ma605 * 3 - eg2605 * 2")
+	ui.renderArbitrageMonitor()
+
+	if got := strings.TrimSpace(ui.liveFlow.GetCell(1, 7).Text); got != "READY" {
+		t.Fatalf("expected READY status when raw rows include all legs, got %q", got)
+	}
+	if got := strings.TrimSpace(ui.liveFlow.GetCell(1, 1).Text); got != "3500" {
+		t.Fatalf("expected value computed from raw rows (3500), got %q", got)
+	}
+	if got := strings.TrimSpace(ui.liveFlow.GetCell(1, 8).Text); got != "-" {
+		t.Fatalf("expected no missing contracts when raw rows include all legs, got %q", got)
+	}
+}
