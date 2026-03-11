@@ -313,23 +313,51 @@ func TestConvertMarketRowsLeavesChangeUnknownWithoutPreSettlement(t *testing.T) 
 func TestConvertMarketRowsRendersMissingQuotesAsUnknown(t *testing.T) {
 	rows := convertMarketRows([]map[string]any{
 		{
-			"ctp_contract":  "cu2604",
-			"last":          nil,
-			"bid1":          nil,
-			"ask1":          nil,
-			"volume":        nil,
-			"open_interest": nil,
-			"datetime":      nil,
+			"ctp_contract":   "cu2604",
+			"last":           nil,
+			"open":           nil,
+			"high":           nil,
+			"low":            nil,
+			"pre_close":      nil,
+			"pre_settlement": nil,
+			"bid1":           nil,
+			"ask1":           nil,
+			"volume":         nil,
+			"open_interest":  nil,
+			"datetime":       nil,
 		},
 	})
 	if len(rows) != 1 {
 		t.Fatalf("expected 1 row, got %d", len(rows))
 	}
-	if rows[0].Last != "-" || rows[0].Bid != "-" || rows[0].Ask != "-" || rows[0].Vol != "-" || rows[0].OI != "-" {
+	if rows[0].Last != "-" || rows[0].Open != "-" || rows[0].High != "-" || rows[0].Low != "-" ||
+		rows[0].PreClose != "-" || rows[0].PreSettle != "-" ||
+		rows[0].Bid != "-" || rows[0].Ask != "-" || rows[0].Vol != "-" || rows[0].OI != "-" {
 		t.Fatalf("expected missing fields to render as '-', got %+v", rows[0])
 	}
 	if rows[0].TS != "-" {
 		t.Fatalf("expected missing timestamp to render as '-', got %q", rows[0].TS)
+	}
+}
+
+func TestConvertMarketRowsMapsOpenHighLowValues(t *testing.T) {
+	rows := convertMarketRows([]map[string]any{
+		{
+			"ctp_contract":   "cu2604",
+			"last":           101.0,
+			"open":           100.0,
+			"high":           110.0,
+			"low":            95.0,
+			"pre_close":      99.0,
+			"pre_settlement": 98.0,
+		},
+	})
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+	if rows[0].Last != "101" || rows[0].Open != "100" || rows[0].High != "110" || rows[0].Low != "95" ||
+		rows[0].PreClose != "99" || rows[0].PreSettle != "98" {
+		t.Fatalf("unexpected mapped open/high/low fields: %+v", rows[0])
 	}
 }
 
@@ -475,6 +503,57 @@ func TestApplyUnusualSnapshotResetsFlowAggregationOnSeqRegression(t *testing.T) 
 	}
 	if ui.lastUnusualSeq != 1 {
 		t.Fatalf("expected last unusual seq to update to 1, got %d", ui.lastUnusualSeq)
+	}
+}
+
+func TestFilterUnusualRowsSupportsCSVFilters(t *testing.T) {
+	rows := []map[string]any{
+		{"symbol": "cu", "ctp_contract": "cu2604C72000"},
+		{"symbol": "ag", "ctp_contract": "ag2604P5200"},
+		{"symbol": "zn", "ctp_contract": "zn2604C23000"},
+	}
+
+	filtered := filterUnusualRows(rows, "CU, ag", "cu2604c72000, ag2604p5200")
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2 rows after csv filter, got %d", len(filtered))
+	}
+	if got := strings.TrimSpace(asString(filtered[0]["ctp_contract"])); got != "cu2604C72000" {
+		t.Fatalf("unexpected first filtered contract: %q", got)
+	}
+	if got := strings.TrimSpace(asString(filtered[1]["ctp_contract"])); got != "ag2604P5200" {
+		t.Fatalf("unexpected second filtered contract: %q", got)
+	}
+}
+
+func TestApplyUnusualSnapshotAppliesSymbolContractFiltersToTradesTable(t *testing.T) {
+	ui := &UI{
+		liveTrades:            tview.NewTable(),
+		useArbMonitor:         true,
+		unusualFilterSymbol:   "cu,ag",
+		unusualFilterContract: "cu2604c72000,ag2604p5200",
+	}
+	rows := []map[string]any{
+		{"symbol": "cu", "ctp_contract": "cu2604C72000", "cp": "c"},
+		{"symbol": "ag", "ctp_contract": "ag2604P5200", "cp": "p"},
+		{"symbol": "zn", "ctp_contract": "zn2604C23000", "cp": "c"},
+		{"symbol": "cu", "ctp_contract": "cu2605C72000", "cp": "c"},
+	}
+	ui.applyUnusualSnapshot(router.UnusualSnapshot{
+		Seq:  1,
+		Rows: rows,
+	})
+
+	if len(ui.unusualRawRows) != 4 {
+		t.Fatalf("expected unusual raw rows to cache all 4 items, got %d", len(ui.unusualRawRows))
+	}
+	if got := ui.liveTrades.GetRowCount(); got != 3 {
+		t.Fatalf("expected header + 2 filtered rows, got row count %d", got)
+	}
+	if got := strings.TrimSpace(ui.liveTrades.GetCell(1, 1).Text); got != "cu2604C72000" {
+		t.Fatalf("unexpected first filtered table contract: %q", got)
+	}
+	if got := strings.TrimSpace(ui.liveTrades.GetCell(2, 1).Text); got != "ag2604P5200" {
+		t.Fatalf("unexpected second filtered table contract: %q", got)
 	}
 }
 

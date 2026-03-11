@@ -31,11 +31,12 @@ type Settings struct {
 	GammaBucketFrontDays int     `json:"gamma_bucket_front_days"`
 	GammaBucketMidDays   int     `json:"gamma_bucket_mid_days"`
 
-	Overview SettingsOverview `json:"settings_overview"`
-	Market   SettingsMarket   `json:"settings_market"`
-	Options  SettingsOptions  `json:"settings_options"`
-	Unusual  SettingsUnusual  `json:"settings_unusual"`
-	Flow     SettingsFlow     `json:"settings_flow"`
+	Overview  SettingsOverview  `json:"settings_overview"`
+	Market    SettingsMarket    `json:"settings_market"`
+	Options   SettingsOptions   `json:"settings_options"`
+	Unusual   SettingsUnusual   `json:"settings_unusual"`
+	Flow      SettingsFlow      `json:"settings_flow"`
+	Arbitrage SettingsArbitrage `json:"settings_arbitrage"`
 }
 
 type SettingsOverview struct {
@@ -64,6 +65,8 @@ type SettingsUnusual struct {
 	TurnoverChgThreshold   float64 `json:"turnover_chg_threshold"`
 	TurnoverRatioThreshold float64 `json:"turnover_ratio_threshold"`
 	OIRatioThreshold       float64 `json:"oi_ratio_threshold"`
+	Symbol                 string  `json:"symbol"`
+	Contract               string  `json:"contract"`
 }
 
 type SettingsFlow struct {
@@ -71,6 +74,17 @@ type SettingsFlow struct {
 	MinAnalysisSeconds int  `json:"min_analysis_seconds"`
 	OnlySelected       bool `json:"only_selected"`
 	OnlyFocused        bool `json:"only_focused"`
+}
+
+type SettingsArbitrage struct {
+	Formula string                  `json:"formula"`
+	Pairs   []SettingsArbitragePair `json:"pairs"`
+}
+
+type SettingsArbitragePair struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Formula string `json:"formula"`
 }
 
 func Default() Settings {
@@ -83,8 +97,9 @@ func Default() Settings {
 		Overview:             SettingsOverview{SortBy: "turnover", SortAsc: false, RequireOptions: false},
 		Market:               SettingsMarket{SortBy: "vol", SortAsc: false},
 		Options:              SettingsOptions{DeltaEnabled: false, DeltaAbsMin: 0.25, DeltaAbsMax: 0.5},
-		Unusual:              SettingsUnusual{TurnoverChgThreshold: 100000.0, TurnoverRatioThreshold: 0.05, OIRatioThreshold: 0.05},
+		Unusual:              SettingsUnusual{TurnoverChgThreshold: 100000.0, TurnoverRatioThreshold: 0.05, OIRatioThreshold: 0.05, Symbol: "", Contract: ""},
 		Flow:                 SettingsFlow{WindowSeconds: 120, MinAnalysisSeconds: 30, OnlySelected: false, OnlyFocused: false},
+		Arbitrage:            SettingsArbitrage{Formula: "", Pairs: nil},
 	}
 }
 
@@ -217,6 +232,8 @@ func (s *Settings) Normalize() {
 	if !isFinite(s.Unusual.OIRatioThreshold) || s.Unusual.OIRatioThreshold <= 0 {
 		s.Unusual.OIRatioThreshold = defaults.Unusual.OIRatioThreshold
 	}
+	s.Unusual.Symbol = strings.TrimSpace(s.Unusual.Symbol)
+	s.Unusual.Contract = strings.TrimSpace(s.Unusual.Contract)
 
 	if s.Flow.WindowSeconds < 60 || s.Flow.WindowSeconds > 300 {
 		s.Flow.WindowSeconds = defaults.Flow.WindowSeconds
@@ -230,6 +247,38 @@ func (s *Settings) Normalize() {
 	if s.Flow.OnlySelected && s.Flow.OnlyFocused {
 		s.Flow.OnlyFocused = false
 	}
+
+	s.Arbitrage.Formula = strings.TrimSpace(s.Arbitrage.Formula)
+	normalizedPairs := make([]SettingsArbitragePair, 0, len(s.Arbitrage.Pairs))
+	usedIDs := make(map[string]struct{}, len(s.Arbitrage.Pairs))
+	for _, pair := range s.Arbitrage.Pairs {
+		formula := strings.TrimSpace(pair.Formula)
+		if formula == "" {
+			continue
+		}
+		name := strings.TrimSpace(pair.Name)
+		id := strings.TrimSpace(pair.ID)
+		if id == "" {
+			id = fmt.Sprintf("arb-%03d", len(normalizedPairs)+1)
+		}
+		baseID := id
+		suffix := 2
+		for {
+			key := strings.ToLower(strings.TrimSpace(id))
+			if _, exists := usedIDs[key]; !exists && key != "" {
+				usedIDs[key] = struct{}{}
+				break
+			}
+			id = fmt.Sprintf("%s-%d", baseID, suffix)
+			suffix++
+		}
+		normalizedPairs = append(normalizedPairs, SettingsArbitragePair{
+			ID:      id,
+			Name:    name,
+			Formula: formula,
+		})
+	}
+	s.Arbitrage.Pairs = normalizedPairs
 }
 
 func (s Settings) Validate() error {

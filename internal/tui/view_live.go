@@ -61,18 +61,22 @@ func (ui *UI) buildLiveScreen() tview.Primitive {
 	ui.liveFlow = tview.NewTable()
 	ui.liveFlow.SetSelectable(false, false)
 	ui.liveFlow.SetFixed(1, 0)
-	ui.liveFlow.SetBorder(true).SetTitle("Flow Aggregation")
+	lowerPanelTitle := "Flow Aggregation"
+	if ui.useArbMonitor {
+		lowerPanelTitle = "Arbitrage Monitor"
+	}
+	ui.liveFlow.SetBorder(true).SetTitle(lowerPanelTitle)
 	ui.liveFlow.SetBorderColor(colorBorder).SetTitleColor(colorBorder)
 
 	ui.liveCurve = tview.NewTextView()
-	ui.liveCurve.SetTextColor(colorMuted)
+	ui.liveCurve.SetTextColor(colorTableRow)
 	ui.liveCurve.SetBackgroundColor(colorBackground)
 	ui.liveCurve.SetBorder(true).SetTitle("VIX + forward curve")
 	ui.liveCurve.SetBorderColor(colorBorder).SetTitleColor(colorBorder)
 	ui.liveCurve.SetText("Waiting for curve snapshot...")
 
 	ui.liveOpts = tview.NewTextView()
-	ui.liveOpts.SetTextColor(colorMuted)
+	ui.liveOpts.SetTextColor(colorTableRow)
 	ui.liveOpts.SetBackgroundColor(colorBackground)
 	ui.liveOpts.SetScrollable(true)
 	ui.liveOpts.SetWrap(false)
@@ -120,7 +124,11 @@ func (ui *UI) buildLiveScreen() tview.Primitive {
 	fillOverviewTable(ui.liveOverview, nil)
 	fillMarketTable(ui.liveMarket, nil)
 	fillTradesTable(ui.liveTrades, nil)
-	fillFlowTable(ui.liveFlow, nil)
+	if ui.useArbMonitor {
+		fillArbitrageTable(ui.liveFlow, nil)
+	} else {
+		fillFlowTable(ui.liveFlow, nil)
+	}
 	if ui.liveLog != nil {
 		ui.liveLog.SetText("Waiting for runtime logs...")
 	}
@@ -136,12 +144,12 @@ func fillOverviewTable(table *tview.Table, rows []overviewFuturesDisplayRow) {
 		"OI_CHG%",
 		"TURN",
 		"C_INV",
-		"C_FNT",
-		"C_MID",
-		"C_BAK",
 		"P_INV",
+		"C_FNT",
 		"P_FNT",
+		"C_MID",
 		"P_MID",
+		"C_BAK",
 		"P_BAK",
 	}
 	for col, label := range headers {
@@ -163,12 +171,12 @@ func fillOverviewTable(table *tview.Table, rows []overviewFuturesDisplayRow) {
 			formatOptionalFloat(row.OIChgPct*100, row.HasOIChgPct) + percentSuffix(row.HasOIChgPct),
 			formatSciOptional(row.Turnover, row.HasTurnover),
 			formatSciOptional(row.CGammaInv, row.HasCGammaInv),
-			formatSciOptional(row.CGammaFnt, row.HasCGammaFnt),
-			formatSciOptional(row.CGammaMid, row.HasCGammaMid),
-			formatSciOptional(row.CGammaBack, row.HasCGammaBack),
 			formatSciOptional(row.PGammaInv, row.HasPGammaInv),
+			formatSciOptional(row.CGammaFnt, row.HasCGammaFnt),
 			formatSciOptional(row.PGammaFnt, row.HasPGammaFnt),
+			formatSciOptional(row.CGammaMid, row.HasCGammaMid),
 			formatSciOptional(row.PGammaMid, row.HasPGammaMid),
+			formatSciOptional(row.CGammaBack, row.HasCGammaBack),
 			formatSciOptional(row.PGammaBack, row.HasPGammaBack),
 		}
 		for col, value := range values {
@@ -250,6 +258,20 @@ type FlowRow struct {
 	TimeWindow   string
 }
 
+type ArbitrageMonitorRow struct {
+	Name      string
+	Value     string
+	High      string
+	Low       string
+	Open      string
+	PreClose  string
+	PreSettle string
+	Status    string
+	Missing   string
+	UpdatedAt string
+	Formula   string
+}
+
 func fillFlowTable(table *tview.Table, rows []FlowRow, emptyMessage ...string) {
 	table.Clear()
 	headers := []string{
@@ -295,6 +317,64 @@ func fillFlowTable(table *tview.Table, rows []FlowRow, emptyMessage ...string) {
 			row.PatternHint,
 			row.TopContracts,
 			row.TimeWindow,
+		}
+		for col, value := range values {
+			cell := tview.NewTableCell(padTableCell(value)).
+				SetTextColor(colorTableRow).
+				SetAlign(tview.AlignLeft).
+				SetSelectable(false)
+			table.SetCell(i+1, col, cell)
+		}
+	}
+}
+
+func fillArbitrageTable(table *tview.Table, rows []ArbitrageMonitorRow, emptyMessage ...string) {
+	table.Clear()
+	headers := []string{
+		"NAME",
+		"VALUE",
+		"HIGH",
+		"LOW",
+		"OPEN",
+		"PRE_CLOSE",
+		"PRE_SETTLE",
+		"STATUS",
+		"MISSING",
+		"UPDATED_AT",
+		"FORMULA",
+	}
+	for col, label := range headers {
+		cell := tview.NewTableCell(padTableCell(label)).
+			SetTextColor(colorTableHeader).
+			SetAlign(tview.AlignLeft).
+			SetSelectable(false)
+		table.SetCell(0, col, cell)
+	}
+	if len(rows) == 0 {
+		message := "Press Enter to input arbitrage formula."
+		if len(emptyMessage) > 0 && strings.TrimSpace(emptyMessage[0]) != "" {
+			message = emptyMessage[0]
+		}
+		cell := tview.NewTableCell(message).
+			SetTextColor(colorMuted).
+			SetAlign(tview.AlignLeft).
+			SetSelectable(false)
+		table.SetCell(1, 0, cell)
+		return
+	}
+	for i, row := range rows {
+		values := []string{
+			row.Name,
+			row.Value,
+			row.High,
+			row.Low,
+			row.Open,
+			row.PreClose,
+			row.PreSettle,
+			row.Status,
+			row.Missing,
+			row.UpdatedAt,
+			row.Formula,
 		}
 		for col, value := range values {
 			cell := tview.NewTableCell(padTableCell(value)).

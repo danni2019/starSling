@@ -150,12 +150,16 @@ func (ui *UI) applyPersistedSettings(cfg settingsstore.Settings) {
 	ui.unusualChgThreshold = cfg.Unusual.TurnoverChgThreshold
 	ui.unusualRatioThreshold = cfg.Unusual.TurnoverRatioThreshold
 	ui.unusualOIRatioThreshold = cfg.Unusual.OIRatioThreshold
+	ui.unusualFilterSymbol = cfg.Unusual.Symbol
+	ui.unusualFilterContract = cfg.Unusual.Contract
 
 	selectedOnly, focusedOnly := normalizeExclusiveFlowFilters(cfg.Flow.OnlySelected, cfg.Flow.OnlyFocused)
 	ui.flowOnlySelectedContracts = selectedOnly
 	ui.flowOnlyFocusedSymbol = focusedOnly
 	ui.flowWindowSeconds = cfg.Flow.WindowSeconds
 	ui.flowMinAnalysisSeconds = cfg.Flow.MinAnalysisSeconds
+
+	ui.applyArbitrageSettings(cfg.Arbitrage)
 }
 
 func (ui *UI) refreshLivePanelsFromPersistedSettings() {
@@ -175,8 +179,11 @@ func (ui *UI) refreshLivePanelsFromPersistedSettings() {
 	if ui.liveOpts != nil {
 		ui.renderOptionsSnapshot()
 	}
+	if ui.liveTrades != nil {
+		ui.renderUnusualTradesFromState()
+	}
 	if ui.liveFlow != nil {
-		ui.renderFlowAggregation()
+		ui.renderLiveLowerPanel()
 	}
 }
 
@@ -232,6 +239,8 @@ func (ui *UI) saveUnusualSettingsToStore() {
 		cfg.Unusual.TurnoverChgThreshold = ui.unusualChgThreshold
 		cfg.Unusual.TurnoverRatioThreshold = ui.unusualRatioThreshold
 		cfg.Unusual.OIRatioThreshold = ui.unusualOIRatioThreshold
+		cfg.Unusual.Symbol = strings.TrimSpace(ui.unusualFilterSymbol)
+		cfg.Unusual.Contract = strings.TrimSpace(ui.unusualFilterContract)
 	})
 	if err != nil {
 		ui.appendLiveLogLine("save unusual settings failed: " + err.Error())
@@ -248,6 +257,77 @@ func (ui *UI) saveFlowSettingsToStore() {
 	if err != nil {
 		ui.appendLiveLogLine("save flow settings failed: " + err.Error())
 	}
+}
+
+func (ui *UI) saveArbitrageSettingsToStore() {
+	err := ui.persistSettingsMutation(func(cfg *settingsstore.Settings) {
+		pairs := make([]settingsstore.SettingsArbitragePair, 0, len(ui.arbMonitors))
+		for _, monitor := range ui.arbMonitors {
+			formula := strings.TrimSpace(monitor.Formula)
+			if formula == "" {
+				continue
+			}
+			pairs = append(pairs, settingsstore.SettingsArbitragePair{
+				ID:      strings.TrimSpace(monitor.ID),
+				Name:    strings.TrimSpace(monitor.Name),
+				Formula: formula,
+			})
+		}
+		cfg.Arbitrage.Pairs = pairs
+		if len(pairs) > 0 {
+			cfg.Arbitrage.Formula = pairs[0].Formula
+		} else {
+			cfg.Arbitrage.Formula = ""
+		}
+	})
+	if err != nil {
+		ui.appendLiveLogLine("save arbitrage settings failed: " + err.Error())
+	}
+}
+
+func (ui *UI) applyArbitrageSettings(arb settingsstore.SettingsArbitrage) {
+	ui.arbMonitors = nil
+	ui.arbSelectedMonitorID = ""
+	ui.arbIDCounter = 0
+
+	if len(arb.Pairs) > 0 {
+		seen := make(map[string]struct{}, len(arb.Pairs))
+		for _, pair := range arb.Pairs {
+			formula := strings.TrimSpace(pair.Formula)
+			if formula == "" {
+				continue
+			}
+			id := strings.TrimSpace(pair.ID)
+			if id == "" {
+				id = ui.newArbitrageMonitorID()
+			}
+			key := normalizeToken(id)
+			if key == "" {
+				id = ui.newArbitrageMonitorID()
+				key = normalizeToken(id)
+			}
+			if _, exists := seen[key]; exists {
+				id = ui.newArbitrageMonitorID()
+				key = normalizeToken(id)
+			}
+			seen[key] = struct{}{}
+			monitor := arbMonitorState{
+				ID:      id,
+				Name:    strings.TrimSpace(pair.Name),
+				Formula: formula,
+			}
+			ui.compileArbitrageMonitor(&monitor)
+			ui.arbMonitors = append(ui.arbMonitors, monitor)
+		}
+		ui.normalizeArbitrageSelection()
+		return
+	}
+
+	legacy := strings.TrimSpace(arb.Formula)
+	if legacy == "" {
+		return
+	}
+	ui.setArbitrageFormula(legacy)
 }
 
 func (ui *UI) pushOverviewGammaBuckets(frontDays, midDays int) error {

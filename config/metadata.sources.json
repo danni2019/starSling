@@ -14,7 +14,16 @@
     },
     {
       "name": "contract",
-      "url": "http://dict.openctp.cn/instruments?types=futures,option&markets=SHFE,CZCE,DCE,INE,GFEX,CFFEX"
+      "urls": [
+        "http://dict.openctp.cn/instruments?types=futures&markets=SHFE,CZCE,DCE,INE,GFEX,CFFEX",
+        "http://dict.openctp.cn/instruments?types=option&markets=SHFE",
+        "http://dict.openctp.cn/instruments?types=option&markets=CZCE",
+        "http://dict.openctp.cn/instruments?types=option&markets=DCE",
+        "http://dict.openctp.cn/instruments?types=option&markets=INE",
+        "http://dict.openctp.cn/instruments?types=option&markets=GFEX",
+        "http://dict.openctp.cn/instruments?types=option&markets=CFFEX"
+      ],
+      "timeout_sec": 60
     }
   ]
 }

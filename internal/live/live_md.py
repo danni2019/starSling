@@ -154,6 +154,22 @@ def load_metadata_payload(name: str):
     return None
 
 
+def _parse_contract_metadata_rows(payload):
+    if payload is None:
+        return []
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        data = payload.get("data")
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            nested = data.get("data")
+            if isinstance(nested, list):
+                return nested
+    return []
+
+
 class MdSpi(mdapi.CThostFtdcMdSpi):
     def __init__(self, front: str, instruments: list[str], username: str, password: str) -> None:
         super().__init__()
@@ -170,9 +186,9 @@ class MdSpi(mdapi.CThostFtdcMdSpi):
         self.contract_meta_data = self.__contract_meta__()
 
     def __contract_meta__(self):
-        contract_meta_data = load_metadata_payload("contract")
-        if contract_meta_data is None:
-            log("contract metadata missing; continue with empty contract meta")
+        contract_rows = _parse_contract_metadata_rows(load_metadata_payload("contract"))
+        if len(contract_rows) == 0:
+            log("contract metadata missing or empty; continue with empty contract meta")
             return pd.DataFrame(
                 columns=[
                     "exchange",
@@ -189,26 +205,7 @@ class MdSpi(mdapi.CThostFtdcMdSpi):
                     "status",
                 ]
             ).set_index("ctp_contract", drop=True)
-        contract_data = contract_meta_data.get("data", None)
-        if contract_data is None or (isinstance(contract_data, list) and len(contract_data) == 0):
-            log("contract metadata payload empty; continue with empty contract meta")
-            return pd.DataFrame(
-                columns=[
-                    "exchange",
-                    "ctp_contract",
-                    "name",
-                    "product_class",
-                    "symbol",
-                    "multiplier",
-                    "list_date",
-                    "expiry_date",
-                    "underlying",
-                    "option_type",
-                    "strike",
-                    "status",
-                ]
-            ).set_index("ctp_contract", drop=True)
-        df = pd.DataFrame(contract_data)
+        df = pd.DataFrame(contract_rows)
         df = df[[
             'ExchangeID', 'InstrumentID', 'InstrumentName', 'ProductClass', 'ProductID', 'VolumeMultiple', 
             'OpenDate', 'ExpireDate', 'UnderlyingInstrID', 'OptionsType', 'StrikePrice', 'InstLifePhase'

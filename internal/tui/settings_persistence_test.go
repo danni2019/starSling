@@ -165,3 +165,57 @@ func TestResumeDeferredLivePersistedSettingsApplyReloadsFreshSettingsOnce(t *tes
 		t.Fatalf("expected second resume with no pending marker to do nothing, got %d loads", loadCalls)
 	}
 }
+
+func TestApplyPersistedSettingsMigratesLegacySingleArbitrageFormula(t *testing.T) {
+	ui := &UI{}
+	cfg := settingsstore.Default()
+	cfg.Arbitrage.Formula = "ma605 * 3 - eg2605 * 2"
+	cfg.Arbitrage.Pairs = nil
+
+	ui.applyPersistedSettings(cfg)
+
+	if len(ui.arbMonitors) != 1 {
+		t.Fatalf("expected legacy single formula to migrate into one pair, got %+v", ui.arbMonitors)
+	}
+	if ui.arbMonitors[0].Formula != "ma605 * 3 - eg2605 * 2" {
+		t.Fatalf("unexpected migrated formula: %+v", ui.arbMonitors[0])
+	}
+}
+
+func TestApplyPersistedSettingsPrefersArbitragePairsOverLegacyFormula(t *testing.T) {
+	ui := &UI{}
+	cfg := settingsstore.Default()
+	cfg.Arbitrage.Formula = "legacy-formula"
+	cfg.Arbitrage.Pairs = []settingsstore.SettingsArbitragePair{
+		{ID: "pairA", Name: "A", Formula: "rb2605-rb2610"},
+		{ID: "pairB", Name: "B", Formula: "IF2606-IF2607"},
+	}
+
+	ui.applyPersistedSettings(cfg)
+
+	if len(ui.arbMonitors) != 2 {
+		t.Fatalf("expected two pairs from settings, got %+v", ui.arbMonitors)
+	}
+	if ui.arbMonitors[0].ID != "pairA" || ui.arbMonitors[1].ID != "pairB" {
+		t.Fatalf("unexpected pair ids after load: %+v", ui.arbMonitors)
+	}
+	if ui.arbMonitors[0].Formula == "legacy-formula" {
+		t.Fatalf("expected pairs to override legacy formula")
+	}
+}
+
+func TestApplyPersistedSettingsLoadsUnusualSymbolContractFilters(t *testing.T) {
+	ui := &UI{}
+	cfg := settingsstore.Default()
+	cfg.Unusual.Symbol = "cu,ag"
+	cfg.Unusual.Contract = "cu2604,ag2604"
+
+	ui.applyPersistedSettings(cfg)
+
+	if ui.unusualFilterSymbol != "cu,ag" {
+		t.Fatalf("unexpected unusual symbol filter: %q", ui.unusualFilterSymbol)
+	}
+	if ui.unusualFilterContract != "cu2604,ag2604" {
+		t.Fatalf("unexpected unusual contract filter: %q", ui.unusualFilterContract)
+	}
+}

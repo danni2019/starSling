@@ -177,10 +177,13 @@ type UI struct {
 	lastCurveStale            bool
 	lastUnusualSeq            int64
 	lastUnusualStale          bool
+	unusualRawRows            []map[string]any
 	lastLogsSeq               int64
 	unusualChgThreshold       float64
 	unusualRatioThreshold     float64
 	unusualOIRatioThreshold   float64
+	unusualFilterSymbol       string
+	unusualFilterContract     string
 	liveLogLines              []string
 	flowWindowSeconds         int
 	flowMinAnalysisSeconds    int
@@ -193,6 +196,10 @@ type UI struct {
 	flowPrevByContract        map[string]optionFrame
 	flowCurrByContract        map[string]optionFrame
 	flowHasResult             bool
+	useArbMonitor             bool
+	arbMonitors               []arbMonitorState
+	arbSelectedMonitorID      string
+	arbIDCounter              int
 	voiceQueue                chan string
 	logoTitleWidth            int
 	logoFrame                 int
@@ -232,6 +239,7 @@ func newUI(routerAddr string, logger *slog.Logger) *UI {
 		flowMinAnalysisSeconds:  defaultFlowMinAnalysisSeconds,
 		flowSortBy:              "total_turnover_sum",
 		flowSortAsc:             false,
+		useArbMonitor:           true,
 		optionsDeltaAbsMin:      defaultOptionsDeltaAbsMin,
 		optionsDeltaAbsMax:      defaultOptionsDeltaAbsMax,
 		voiceContracts:          make(map[string]struct{}),
@@ -335,7 +343,11 @@ func (ui *UI) handleLiveKeys(event *tcell.EventKey) *tcell.EventKey {
 		} else if ui.app.GetFocus() == ui.liveTrades {
 			ui.openUnusualThresholdSettings()
 		} else if ui.app.GetFocus() == ui.liveFlow {
-			ui.openFlowSettings()
+			if ui.useArbMonitor {
+				ui.openArbitrageMonitorSettings()
+			} else {
+				ui.openFlowSettings()
+			}
 		}
 		return nil
 	case tcell.KeyRune:
@@ -553,7 +565,7 @@ func (ui *UI) openMarketFilter() {
 		ui.marketSortAsc = order == "asc"
 		ui.renderMarketRows()
 		ui.ensureFocusSymbol()
-		ui.renderFlowAggregation()
+		ui.renderLiveLowerPanel()
 		ui.saveMarketSettingsToStore()
 		ui.closeDrilldown()
 	})
@@ -561,7 +573,7 @@ func (ui *UI) openMarketFilter() {
 		ui.resetMarketFilters()
 		ui.renderMarketRows()
 		ui.ensureFocusSymbol()
-		ui.renderFlowAggregation()
+		ui.renderLiveLowerPanel()
 		ui.saveMarketSettingsToStore()
 		ui.closeDrilldown()
 	})
@@ -594,6 +606,12 @@ func (ui *UI) openUnusualThresholdSettings() {
 	oiRatioInput := tview.NewInputField().
 		SetLabel("OI Ratio >= ").
 		SetText(strconv.FormatFloat(ui.unusualOIRatioThreshold, 'f', 4, 64))
+	symbolInput := tview.NewInputField().
+		SetLabel("Filter Symbol(csv): ").
+		SetText(strings.TrimSpace(ui.unusualFilterSymbol))
+	contractInput := tview.NewInputField().
+		SetLabel("Filter Contract(csv): ").
+		SetText(strings.TrimSpace(ui.unusualFilterContract))
 	hint := tview.NewTextView().
 		SetTextColor(colorMuted).
 		SetText(" ")
@@ -601,7 +619,9 @@ func (ui *UI) openUnusualThresholdSettings() {
 	form := tview.NewForm().
 		AddFormItem(chgInput).
 		AddFormItem(ratioInput).
-		AddFormItem(oiRatioInput)
+		AddFormItem(oiRatioInput).
+		AddFormItem(symbolInput).
+		AddFormItem(contractInput)
 	form.SetBorder(true).SetTitle("Unusual thresholds")
 	form.SetBorderColor(colorBorder).SetTitleColor(colorBorder)
 	form.SetBackgroundColor(colorBackground)
@@ -626,6 +646,9 @@ func (ui *UI) openUnusualThresholdSettings() {
 		}
 		hint.SetText(" ")
 		ui.appendLiveLogLine(fmt.Sprintf("unusual thresholds updated: chg>=%.0f turnover_ratio>=%.2f%% oi_ratio>=%.2f%%", chg, ratio*100, oiRatio*100))
+		ui.unusualFilterSymbol = strings.TrimSpace(symbolInput.GetText())
+		ui.unusualFilterContract = strings.TrimSpace(contractInput.GetText())
+		ui.renderUnusualTradesFromState()
 		ui.saveUnusualSettingsToStore()
 		ui.closeDrilldown()
 	})
@@ -636,7 +659,7 @@ func (ui *UI) openUnusualThresholdSettings() {
 	layout := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(form, 0, 1, true).
 		AddItem(hint, 1, 0, false)
-	ui.pages.AddPage(string(screenDrilldown), centerModal(layout, 62, 14), true, true)
+	ui.pages.AddPage(string(screenDrilldown), centerModal(layout, 72, 16), true, true)
 	ui.app.SetFocus(form)
 }
 
@@ -1006,7 +1029,7 @@ func (ui *UI) queueFlowRenderFromSelection() {
 			if ui.currentScreen() != screenLive {
 				return
 			}
-			ui.renderFlowAggregation()
+			ui.renderLiveLowerPanel()
 		})
 	}()
 }
@@ -1068,6 +1091,9 @@ func (ui *UI) applyMarketSnapshot(snapshot router.MarketSnapshot) {
 		ui.lastMarketSeq = 0
 		ui.lastMarketStale = false
 		ui.renderMarketRows()
+		if ui.useArbMonitor {
+			ui.renderArbitrageMonitor()
+		}
 		return
 	}
 	if snapshot.Seq < ui.lastMarketSeq {
@@ -1084,7 +1110,11 @@ func (ui *UI) applyMarketSnapshot(snapshot router.MarketSnapshot) {
 			ui.marketRawRows = []map[string]any{}
 		}
 		ui.renderMarketRows()
-		ui.renderFlowAggregation()
+		if ui.useArbMonitor {
+			ui.renderArbitrageMonitor()
+		} else {
+			ui.renderFlowAggregation()
+		}
 		ui.lastMarketSeq = snapshot.Seq
 		ui.ensureFocusSymbol()
 	}
@@ -1199,15 +1229,20 @@ func (ui *UI) applyUnusualSnapshot(snapshot router.UnusualSnapshot) {
 	}
 	if snapshot.Seq == 0 {
 		if ui.lastUnusualSeq != 0 {
+			ui.unusualRawRows = nil
 			fillTradesTable(ui.liveTrades, nil)
-			ui.resetFlowAggregation()
+			if !ui.useArbMonitor {
+				ui.resetFlowAggregation()
+			}
 			ui.lastUnusualSeq = 0
 			ui.lastUnusualStale = false
 		}
 		return
 	}
 	if snapshot.Seq < ui.lastUnusualSeq {
-		ui.resetFlowAggregation()
+		if !ui.useArbMonitor {
+			ui.resetFlowAggregation()
+		}
 	}
 	seqChanged := snapshot.Seq != ui.lastUnusualSeq
 	staleChanged := snapshot.Stale != ui.lastUnusualStale
@@ -1215,15 +1250,51 @@ func (ui *UI) applyUnusualSnapshot(snapshot router.UnusualSnapshot) {
 		return
 	}
 	if seqChanged {
-		fillTradesTable(ui.liveTrades, convertUnusualTrades(snapshot.Rows))
-		ui.ingestFlowEvents(snapshot.Rows)
-		ui.renderFlowAggregation()
+		ui.unusualRawRows = snapshot.Rows
+		if ui.unusualRawRows == nil {
+			ui.unusualRawRows = []map[string]any{}
+		}
+		filteredRows := filterUnusualRows(ui.unusualRawRows, ui.unusualFilterSymbol, ui.unusualFilterContract)
+		fillTradesTable(ui.liveTrades, convertUnusualTrades(filteredRows))
+		if !ui.useArbMonitor {
+			ui.ingestFlowEvents(filteredRows)
+			ui.renderFlowAggregation()
+		}
 		ui.lastUnusualSeq = snapshot.Seq
 	}
 	if staleChanged && snapshot.Stale {
 		ui.appendLiveLogLine("unusual snapshot stale")
 	}
 	ui.lastUnusualStale = snapshot.Stale
+}
+
+func (ui *UI) renderUnusualTradesFromState() {
+	if ui.liveTrades == nil {
+		return
+	}
+	filteredRows := filterUnusualRows(ui.unusualRawRows, ui.unusualFilterSymbol, ui.unusualFilterContract)
+	fillTradesTable(ui.liveTrades, convertUnusualTrades(filteredRows))
+}
+
+func filterUnusualRows(rows []map[string]any, symbolCSV, contractCSV string) []map[string]any {
+	symbolTokens := csvTokens(symbolCSV)
+	contractTokens := csvTokens(contractCSV)
+	if len(symbolTokens) == 0 && len(contractTokens) == 0 {
+		return rows
+	}
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		rowSymbol := strings.TrimSpace(asString(row["symbol"]))
+		rowContract := strings.TrimSpace(asString(row["ctp_contract"]))
+		if !tokenMatch(symbolTokens, rowSymbol) {
+			continue
+		}
+		if !tokenMatch(contractTokens, rowContract) {
+			continue
+		}
+		out = append(out, row)
+	}
+	return out
 }
 
 func (ui *UI) applyRouterLogs(snapshot router.LogSnapshot) {
@@ -4322,7 +4393,11 @@ func convertMarketRows(raw []map[string]any) []MarketRow {
 			exchange = "-"
 		}
 		last, hasLast := asOptionalFloat(item["last"])
-		pre, hasPre := asOptionalFloat(item["pre_settlement"])
+		open, hasOpen := asOptionalFloat(item["open"])
+		high, hasHigh := asOptionalFloat(item["high"])
+		low, hasLow := asOptionalFloat(item["low"])
+		preClose, hasPreClose := asOptionalFloat(item["pre_close"])
+		preSettlement, hasPreSettlement := asOptionalFloat(item["pre_settlement"])
 		bid, hasBid := asOptionalFloat(item["bid1"])
 		ask, hasAsk := asOptionalFloat(item["ask1"])
 		bidVol, hasBidVol := asOptionalFloat(item["bid_vol1"])
@@ -4332,8 +4407,8 @@ func convertMarketRows(raw []map[string]any) []MarketRow {
 		preOI, hasPreOI := asOptionalFloat(item["pre_open_interest"])
 		chg := "-"
 		chgPct := "-"
-		if hasLast && hasPre {
-			change := last - pre
+		if hasLast && hasPreSettlement {
+			change := last - preSettlement
 			chg = formatChange(change)
 			if last != 0 {
 				chgPct = formatPercent(change / last)
@@ -4350,20 +4425,25 @@ func convertMarketRows(raw []map[string]any) []MarketRow {
 			ts = "-"
 		}
 		row := MarketRow{
-			Symbol:   symbol,
-			Exchange: exchange,
-			Last:     formatOptionalFloat(last, hasLast),
-			Chg:      chg,
-			ChgPct:   chgPct,
-			BidVol:   formatOptionalFloat(bidVol, hasBidVol),
-			Bid:      formatOptionalFloat(bid, hasBid),
-			Ask:      formatOptionalFloat(ask, hasAsk),
-			AskVol:   formatOptionalFloat(askVol, hasAskVol),
-			Vol:      formatOptionalIntLike(item["volume"]),
-			Turnover: formatOptionalFloat(turnover, hasTurnover),
-			OI:       formatOptionalIntLike(item["open_interest"]),
-			OIChgPct: oiChgPct,
-			TS:       ts,
+			Symbol:    symbol,
+			Exchange:  exchange,
+			Last:      formatOptionalFloat(last, hasLast),
+			Open:      formatOptionalFloat(open, hasOpen),
+			High:      formatOptionalFloat(high, hasHigh),
+			Low:       formatOptionalFloat(low, hasLow),
+			PreClose:  formatOptionalFloat(preClose, hasPreClose),
+			PreSettle: formatOptionalFloat(preSettlement, hasPreSettlement),
+			Chg:       chg,
+			ChgPct:    chgPct,
+			BidVol:    formatOptionalFloat(bidVol, hasBidVol),
+			Bid:       formatOptionalFloat(bid, hasBid),
+			Ask:       formatOptionalFloat(ask, hasAsk),
+			AskVol:    formatOptionalFloat(askVol, hasAskVol),
+			Vol:       formatOptionalIntLike(item["volume"]),
+			Turnover:  formatOptionalFloat(turnover, hasTurnover),
+			OI:        formatOptionalIntLike(item["open_interest"]),
+			OIChgPct:  oiChgPct,
+			TS:        ts,
 		}
 		rows = append(rows, row)
 	}
@@ -5093,7 +5173,7 @@ func (ui *UI) ensureFocusSymbol() {
 			ui.setFocusSymbolState("")
 			ui.focusSyncPending = false
 			ui.pushFocusSymbol("")
-			ui.renderFlowAggregation()
+			ui.renderLiveLowerPanel()
 		}
 		return
 	}
@@ -5108,7 +5188,7 @@ func (ui *UI) ensureFocusSymbol() {
 	ui.setFocusSymbolState(symbol)
 	ui.focusSyncPending = false
 	ui.pushFocusSymbol(symbol)
-	ui.renderFlowAggregation()
+	ui.renderLiveLowerPanel()
 }
 
 func (ui *UI) hasMarketSymbol(symbol string) bool {

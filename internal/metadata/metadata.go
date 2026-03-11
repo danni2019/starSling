@@ -1,6 +1,7 @@
 package metadata
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,17 +11,21 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
 const (
-	RefreshAfter = 2 * time.Hour
-	WarnAfter    = 12 * time.Hour
+	RefreshAfter        = 2 * time.Hour
+	WarnAfter           = 12 * time.Hour
+	DefaultFetchTimeout = 15 * time.Second
 )
 
 type Source struct {
-	Name string `json:"name"`
-	URL  string `json:"url"`
+	Name       string   `json:"name"`
+	URL        string   `json:"url,omitempty"`
+	URLs       []string `json:"urls,omitempty"`
+	TimeoutSec int      `json:"timeout_sec,omitempty"`
 }
 
 type SourceConfig struct {
@@ -58,6 +63,19 @@ func LoadSources() ([]Source, error) {
 	if len(cfg.Sources) == 0 {
 		return nil, fmt.Errorf("metadata sources empty")
 	}
+	for idx := range cfg.Sources {
+		source := &cfg.Sources[idx]
+		source.Name = strings.TrimSpace(source.Name)
+		if source.Name == "" {
+			return nil, fmt.Errorf("metadata source[%d] name empty", idx)
+		}
+		if source.TimeoutSec < 0 {
+			return nil, fmt.Errorf("metadata source[%s] timeout_sec must be >= 0", source.Name)
+		}
+		if len(source.requestURLs()) == 0 {
+			return nil, fmt.Errorf("metadata source[%s] has no url", source.Name)
+		}
+	}
 	return cfg.Sources, nil
 }
 
@@ -77,10 +95,10 @@ func refreshSources(ctx context.Context, logger *slog.Logger, sources []Source) 
 		return fmt.Errorf("create metadata cache dir: %w", err)
 	}
 
-	client := &http.Client{Timeout: 15 * time.Second}
 	var errs []error
 
 	for _, source := range sources {
+		client := &http.Client{Timeout: source.timeout()}
 		if err := fetchAndStore(ctx, client, cacheDir, source, logger); err != nil {
 			err = fmt.Errorf("%s: %w", source.Name, err)
 			errs = append(errs, err)
@@ -182,40 +200,38 @@ func CollectWarnings(sources []Source, now time.Time) []Warning {
 }
 
 func fetchAndStore(ctx context.Context, client *http.Client, cacheDir string, source Source, logger *slog.Logger) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, source.URL, nil)
-	if err != nil {
-		recordError(cacheDir, source, err)
-		return fmt.Errorf("build request: %w", err)
+	if ctx == nil {
+		ctx = context.Background()
 	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		recordError(cacheDir, source, err)
-		return fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		err := fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
+	urls := source.requestURLs()
+	if len(urls) == 0 {
+		err := fmt.Errorf("source has no request url")
 		recordError(cacheDir, source, err)
 		return err
 	}
+	batchCtx, cancel := context.WithTimeout(ctx, source.timeout())
+	defer cancel()
 
-	payload, err := io.ReadAll(resp.Body)
-	if err != nil {
-		recordError(cacheDir, source, err)
-		return fmt.Errorf("read body: %w", err)
+	payloads := make([][]byte, 0, len(urls))
+	for _, url := range urls {
+		payload, err := fetchPayload(batchCtx, client, url)
+		if err != nil {
+			err = fmt.Errorf("fetch %s: %w", url, err)
+			recordError(cacheDir, source, err)
+			return err
+		}
+		payloads = append(payloads, payload)
 	}
-	if !json.Valid(payload) {
-		err := fmt.Errorf("invalid json")
+
+	payload, err := aggregatePayloads(payloads)
+	if err != nil {
 		recordError(cacheDir, source, err)
 		return err
 	}
 
 	cached := Cached{
 		Name:        source.Name,
-		URL:         source.URL,
+		URL:         source.cacheURL(),
 		LastUpdated: time.Now().UTC(),
 		LastError:   "",
 		Data:        json.RawMessage(payload),
@@ -237,17 +253,126 @@ func fetchAndStore(ctx context.Context, client *http.Client, cacheDir string, so
 	return nil
 }
 
+func fetchPayload(ctx context.Context, client *http.Client, url string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
+	}
+
+	payload, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read body: %w", err)
+	}
+	if !json.Valid(payload) {
+		return nil, fmt.Errorf("invalid json")
+	}
+	return payload, nil
+}
+
+func aggregatePayloads(payloads [][]byte) ([]byte, error) {
+	if len(payloads) == 0 {
+		return nil, fmt.Errorf("empty payloads")
+	}
+	if len(payloads) == 1 {
+		return payloads[0], nil
+	}
+
+	merged := make([]json.RawMessage, 0)
+	for _, payload := range payloads {
+		rows, err := extractRows(payload)
+		if err != nil {
+			return nil, err
+		}
+		merged = append(merged, rows...)
+	}
+	if len(merged) == 0 {
+		return nil, fmt.Errorf("merged payload empty")
+	}
+	out, err := json.Marshal(merged)
+	if err != nil {
+		return nil, fmt.Errorf("marshal merged payload: %w", err)
+	}
+	return out, nil
+}
+
+func extractRows(payload []byte) ([]json.RawMessage, error) {
+	trimmed := bytes.TrimSpace(payload)
+	if len(trimmed) == 0 {
+		return nil, fmt.Errorf("empty payload")
+	}
+	switch trimmed[0] {
+	case '[':
+		var rows []json.RawMessage
+		if err := json.Unmarshal(trimmed, &rows); err != nil {
+			return nil, fmt.Errorf("parse payload array: %w", err)
+		}
+		return rows, nil
+	case '{':
+		var envelope struct {
+			Data json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(trimmed, &envelope); err != nil {
+			return nil, fmt.Errorf("parse payload envelope: %w", err)
+		}
+		inner := bytes.TrimSpace(envelope.Data)
+		if len(inner) == 0 || bytes.Equal(inner, []byte("null")) {
+			return nil, fmt.Errorf("payload has no data field")
+		}
+		if inner[0] == '[' {
+			var rows []json.RawMessage
+			if err := json.Unmarshal(inner, &rows); err != nil {
+				return nil, fmt.Errorf("parse payload data array: %w", err)
+			}
+			return rows, nil
+		}
+		if inner[0] == '{' {
+			var wrapped struct {
+				Data *json.RawMessage `json:"data"`
+			}
+			if err := json.Unmarshal(inner, &wrapped); err != nil {
+				return nil, fmt.Errorf("parse payload nested data: %w", err)
+			}
+			if wrapped.Data == nil {
+				return nil, fmt.Errorf("payload nested object has no data field")
+			}
+			nested := bytes.TrimSpace(*wrapped.Data)
+			if len(nested) == 0 || bytes.Equal(nested, []byte("null")) {
+				return nil, fmt.Errorf("payload nested object has no data field")
+			}
+			var rows []json.RawMessage
+			if err := json.Unmarshal(nested, &rows); err != nil {
+				return nil, fmt.Errorf("parse payload nested data: %w", err)
+			}
+			return rows, nil
+		}
+		return nil, fmt.Errorf("unsupported payload data format")
+	default:
+		return nil, fmt.Errorf("unsupported payload format")
+	}
+}
+
 func recordError(cacheDir string, source Source, fetchErr error) {
 	cached, err := loadCacheFromDisk(cacheDir, source.Name)
 	if err != nil {
 		cached = Cached{
 			Name:        source.Name,
-			URL:         source.URL,
+			URL:         source.cacheURL(),
 			LastUpdated: time.Time{},
 			Data:        json.RawMessage("null"),
 		}
 	}
-	cached.URL = source.URL
+	cached.URL = source.cacheURL()
 	cached.LastError = fetchErr.Error()
 	out, err := json.MarshalIndent(cached, "", "  ")
 	if err != nil {
@@ -255,6 +380,43 @@ func recordError(cacheDir string, source Source, fetchErr error) {
 	}
 	path := filepath.Join(cacheDir, fmt.Sprintf("%s.json", source.Name))
 	_ = os.WriteFile(path, out, 0o644)
+}
+
+func (s Source) timeout() time.Duration {
+	if s.TimeoutSec <= 0 {
+		return DefaultFetchTimeout
+	}
+	return time.Duration(s.TimeoutSec) * time.Second
+}
+
+func (s Source) requestURLs() []string {
+	out := make([]string, 0, len(s.URLs)+1)
+	for _, url := range s.URLs {
+		url = strings.TrimSpace(url)
+		if url == "" {
+			continue
+		}
+		out = append(out, url)
+	}
+	if len(out) > 0 {
+		return out
+	}
+	if url := strings.TrimSpace(s.URL); url != "" {
+		return []string{url}
+	}
+	return nil
+}
+
+func (s Source) cacheURL() string {
+	urls := s.requestURLs()
+	switch len(urls) {
+	case 0:
+		return ""
+	case 1:
+		return urls[0]
+	default:
+		return strings.Join(urls, ",")
+	}
 }
 
 func loadCacheFromDisk(cacheDir, name string) (Cached, error) {

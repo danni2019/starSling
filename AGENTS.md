@@ -30,6 +30,7 @@
 - Use Go’s standard `testing` framework with file pattern `*_test.go`.
 - Name tests with `TestXxx` and prefer table-driven tests for contract-like logic.
 - Add or update tests for behavior changes, especially snapshot sequencing, stale-state handling, and RPC payload compatibility.
+- For JSON persistence/cache assertions, compare semantic equality (parsed JSON) instead of raw string formatting to avoid false negatives from pretty-print differences.
 - Validate changes with `go test ./...` before opening a PR, plus manual TUI checks when UI behavior changes.
 
 ## Commit & Pull Request Guidelines
@@ -48,6 +49,7 @@
 - New data-source onboarding must document: source name/scope, key field semantics and units/time basis, enum value mappings, and source-to-internal normalization rules.
 - If mappings/semantics change, update implementation, tests, and `conventions.md` in the same PR.
 - If docs and code diverge, fix documentation first, then merge code changes.
+- For multi-URL metadata fetchers, enforce one cumulative timeout budget per source batch and treat missing required payload fields (for example nested `data`) as hard errors.
 
 ## Agent Workflow Requirements
 - For edits larger than 3 lines, follow: `plan (model_action_plan.md) -> approval -> code -> test -> review -> commit`.
