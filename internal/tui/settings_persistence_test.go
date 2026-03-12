@@ -216,3 +216,20 @@ func TestApplyPersistedSettingsLoadsUnusualSymbolFilterOnly(t *testing.T) {
 		t.Fatalf("unexpected unusual symbol filter: %q", ui.unusualFilterSymbol)
 	}
 }
+
+func TestApplyPersistedSettingsLoadsLiveTimeouts(t *testing.T) {
+	ui := &UI{}
+	cfg := settingsstore.Default()
+	cfg.LiveDisconnectTimeoutSeconds = 77
+	cfg.LiveProcessHangTimeoutSeconds = 88
+
+	ui.applyPersistedSettings(cfg)
+
+	if ui.liveDisconnectTimeoutSeconds != 77 || ui.liveProcessHangTimeoutSeconds != 88 {
+		t.Fatalf(
+			"expected live timeout settings to apply, got disconnect=%d hang=%d",
+			ui.liveDisconnectTimeoutSeconds,
+			ui.liveProcessHangTimeoutSeconds,
+		)
+	}
+}

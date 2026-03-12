@@ -19,7 +19,7 @@ import (
 var liveScript []byte
 
 func Run(ctx context.Context, cfg config.LiveMDConfig, pythonPath string, routerAddr string, logger *slog.Logger) error {
-	proc, err := Start(ctx, cfg, pythonPath, routerAddr, logger)
+	proc, err := Start(ctx, cfg, pythonPath, routerAddr, 0, logger)
 	if err != nil {
 		return err
 	}
@@ -29,13 +29,16 @@ func Run(ctx context.Context, cfg config.LiveMDConfig, pythonPath string, router
 	return nil
 }
 
-func buildArgs(cfg config.LiveMDConfig, scriptPath string, routerAddr string) []string {
+func buildArgs(cfg config.LiveMDConfig, scriptPath string, routerAddr string, disconnectTimeoutSeconds int) []string {
 	args := []string{
 		scriptPath,
 		"--api", cfg.API,
 		"--protocol", cfg.Protocol,
 		"--host", cfg.Host,
 		"--port", strconv.Itoa(cfg.Port),
+	}
+	if disconnectTimeoutSeconds > 0 {
+		args = append(args, "--disconnect_timeout_seconds", strconv.Itoa(disconnectTimeoutSeconds))
 	}
 	if strings.TrimSpace(routerAddr) != "" {
 		args = append(args, "--router_addr", strings.TrimSpace(routerAddr))

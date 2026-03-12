@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-const preOpenLead = 30 * time.Minute
+const tradingWindowPadding = 15 * time.Minute
 
 type TradeSegment struct {
 	Start time.Duration
@@ -75,12 +75,12 @@ func inSegment(now time.Time, seg TradeSegment) bool {
 }
 
 func withinWindow(now time.Time, base time.Time, seg TradeSegment) bool {
-	startAdj := seg.Start - preOpenLead
-	start := base.Add(startAdj)
+	start := base.Add(seg.Start - tradingWindowPadding)
 	end := base.Add(seg.End)
 	if seg.End < seg.Start {
 		end = end.Add(24 * time.Hour)
 	}
+	end = end.Add(tradingWindowPadding)
 	return !now.Before(start) && !now.After(end)
 }
 

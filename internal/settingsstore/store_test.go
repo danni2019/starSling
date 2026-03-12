@@ -22,6 +22,9 @@ func TestLoadPathReturnsDefaultsWhenMissing(t *testing.T) {
 	if got.GammaBucketFrontDays != want.GammaBucketFrontDays || got.GammaBucketMidDays != want.GammaBucketMidDays {
 		t.Fatalf("gamma bucket defaults mismatch: got %+v want %+v", got, want)
 	}
+	if got.LiveDisconnectTimeoutSeconds != want.LiveDisconnectTimeoutSeconds || got.LiveProcessHangTimeoutSeconds != want.LiveProcessHangTimeoutSeconds {
+		t.Fatalf("live timeout defaults mismatch: got %+v want %+v", got, want)
+	}
 }
 
 func TestSaveLoadRoundTrip(t *testing.T) {
@@ -32,6 +35,8 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	cfg.DaysInYear = 252
 	cfg.GammaBucketFrontDays = 20
 	cfg.GammaBucketMidDays = 60
+	cfg.LiveDisconnectTimeoutSeconds = 55
+	cfg.LiveProcessHangTimeoutSeconds = 75
 	cfg.Overview.SortBy = "oi_chg"
 	cfg.Overview.SortAsc = true
 	cfg.Overview.RequireOptions = true
@@ -63,6 +68,9 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 	if got.GammaBucketFrontDays != cfg.GammaBucketFrontDays || got.GammaBucketMidDays != cfg.GammaBucketMidDays {
 		t.Fatalf("gamma buckets mismatch: got %+v want %+v", got, cfg)
+	}
+	if got.LiveDisconnectTimeoutSeconds != cfg.LiveDisconnectTimeoutSeconds || got.LiveProcessHangTimeoutSeconds != cfg.LiveProcessHangTimeoutSeconds {
+		t.Fatalf("live timeout settings mismatch: got %+v want %+v", got, cfg)
 	}
 	if got.Overview.SortBy != "oi_chg" || !got.Overview.SortAsc || !got.Overview.RequireOptions {
 		t.Fatalf("overview settings mismatch: %+v", got.Overview)
@@ -112,6 +120,8 @@ func TestNormalizeFallsBackInvalidFields(t *testing.T) {
 	cfg.DaysInYear = 999
 	cfg.GammaBucketFrontDays = 100
 	cfg.GammaBucketMidDays = 90
+	cfg.LiveDisconnectTimeoutSeconds = -1
+	cfg.LiveProcessHangTimeoutSeconds = 999999
 	cfg.Options.DeltaAbsMin = -1
 	cfg.Options.DeltaAbsMax = 0
 	cfg.Unusual.TurnoverRatioThreshold = -0.1
@@ -139,6 +149,9 @@ func TestNormalizeFallsBackInvalidFields(t *testing.T) {
 	if cfg.GammaBucketFrontDays != DefaultGammaBucketFront || cfg.GammaBucketMidDays != DefaultGammaBucketMid {
 		t.Fatalf("gamma buckets not normalized: front=%d mid=%d", cfg.GammaBucketFrontDays, cfg.GammaBucketMidDays)
 	}
+	if cfg.LiveDisconnectTimeoutSeconds != DefaultLiveDisconnectTimeoutSeconds || cfg.LiveProcessHangTimeoutSeconds != DefaultLiveProcessHangTimeoutSeconds {
+		t.Fatalf("live timeout settings not normalized: disconnect=%d hang=%d", cfg.LiveDisconnectTimeoutSeconds, cfg.LiveProcessHangTimeoutSeconds)
+	}
 	if cfg.Options.DeltaAbsMin != 0.25 || cfg.Options.DeltaAbsMax != 0.5 {
 		t.Fatalf("options deltas not normalized: %+v", cfg.Options)
 	}
@@ -159,6 +172,34 @@ func TestNormalizeFallsBackInvalidFields(t *testing.T) {
 	}
 	if cfg.Arbitrage.Pairs[1].ID == cfg.Arbitrage.Pairs[2].ID {
 		t.Fatalf("expected duplicate IDs to be resolved, got %+v", cfg.Arbitrage.Pairs)
+	}
+}
+
+func TestNormalizeFallsBackLiveHangTimeoutBelowHeartbeatFloor(t *testing.T) {
+	cfg := Default()
+	cfg.LiveProcessHangTimeoutSeconds = minLiveProcessHangTimeoutSeconds - 1
+
+	cfg.Normalize()
+
+	if cfg.LiveProcessHangTimeoutSeconds != DefaultLiveProcessHangTimeoutSeconds {
+		t.Fatalf(
+			"live process hang timeout not normalized: got=%d want=%d",
+			cfg.LiveProcessHangTimeoutSeconds,
+			DefaultLiveProcessHangTimeoutSeconds,
+		)
+	}
+}
+
+func TestValidateRejectsLiveHangTimeoutBelowHeartbeatFloor(t *testing.T) {
+	cfg := Default()
+	cfg.LiveProcessHangTimeoutSeconds = minLiveProcessHangTimeoutSeconds - 1
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatalf("expected validate error for live hang timeout below heartbeat floor")
+	}
+	if !strings.Contains(err.Error(), "live_process_hang_timeout_seconds must be in [5,") {
+		t.Fatalf("unexpected validate error: %v", err)
 	}
 }
 

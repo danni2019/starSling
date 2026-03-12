@@ -840,6 +840,191 @@ Approved by user in-thread ("确认").
 
 ---
 
+# Task: Fix False Live Hang Detection From Stale Heartbeat Logs
+
+## Request Summary
+- Fix the review finding in `internal/tui/app.go`: stale `live_md` heartbeat logs from previous sessions can be treated as current and trigger immediate false hang fallback.
+
+## Root Cause
+- `observeLiveHeartbeat` accepts any heartbeat in router logs.
+- Router log buffer may contain heartbeat entries emitted by a previous `live_md` process.
+- `checkLiveProcessHang` uses `liveHeartbeatAt` age, so old timestamps can be interpreted as current-process heartbeat staleness.
+
+## Implementation Plan
+1. Guard heartbeat acceptance by current process start time.
+- In `observeLiveHeartbeat`, ignore heartbeat entries whose timestamp is earlier than `ui.liveStartedAt` when `liveStartedAt` is set.
+- Keep existing source/level/message filters unchanged.
+
+2. Add regression test.
+- Extend `internal/tui/app_test.go` with a test that injects stale pre-start heartbeat logs and verifies they do not set `liveHeartbeatSeen` / `liveHeartbeatAt`.
+
+3. Validation.
+- Run targeted tests for heartbeat logic in `internal/tui`.
+- Run `go test ./internal/tui`.
+- Run `go test ./...`.
+
+## Risks And Mitigations
+- Risk: first valid heartbeat could be rejected if timestamp comparisons are too strict.
+  - Mitigation: only reject entries strictly before `liveStartedAt`; accept equal/later timestamps.
+
+## Rollback Plan
+1. Revert heartbeat-start-time guard in `observeLiveHeartbeat`.
+2. Remove regression test.
+3. Re-run `go test ./internal/tui` and `go test ./...`.
+
+## Structure Optimization Assessment
+Conclusion: no additional project-structure refactor is needed for this scoped bug fix; current boundaries are sufficient.
+
+## Approval Gate
+Approved by user in-thread ("approved").
+
+---
+
+# Task: CTP Live MD Disconnect Auto-Recovery (Python + Go Failsafe, Unified Lifecycle)
+
+## Request Summary
+User asks to solve current production issue: after network loss / machine sleep, CTP market-data session can disconnect and app currently lacks robust auto-recovery.
+
+Final accepted constraints:
+1. Reconnect should follow existing CTP connection flow already used in current code.
+2. Python layer handles business disconnect recovery (`OnFrontDisconnected`) with timeout-based escalation.
+3. Go layer handles process-level failsafe and fallback to main screen.
+4. Reconnect retry policy: `15s` interval, max `12` attempts (3 minutes) while in trading window.
+5. Trading window gating should use union market windows and extend by `15m` both before start and after end.
+6. Outside trading window: no reconnect attempts.
+7. User `Esc` leaving Live must stop all live processes.
+8. On reconnect exhaustion or Go hang detection: fallback to main screen and stop all live processes.
+9. New settings:
+   - `live_disconnect_timeout_seconds = 45`
+   - `live_process_hang_timeout_seconds = 45`
+10. After implementation + tests pass, remove unused legacy lifecycle code in `cmd/starsling/supervisor.go` and `cmd/starsling/keys.go`.
+
+## Current Baseline Findings
+1. Active runtime path is `cmd/starsling/main.go -> internal/tui` (not `cmd/starsling/supervisor.go`).
+2. `internal/live/live_md.py` currently does:
+   - `OnFrontConnected -> ReqUserLogin`
+   - `OnRspUserLogin -> SubscribeMarketData`
+   - `OnFrontDisconnected -> stop()` (immediate exit).
+3. `internal/tui/app.go` `watchLiveProcessExit` logs and stops workers, but does not auto-restart.
+4. `Esc` in Live only switches screen; it does not stop live processes.
+5. `internal/metadata/trading_window.go` currently has asymmetric extension (`preOpenLead=30m`) and no post-close extension.
+6. No explicit Go-level heartbeat hang failsafe for live_md process health.
+
+## Implementation Plan
+1. Extend Settings schema and persistence.
+- Update `internal/settingsstore/store.go`:
+  - Add `LiveDisconnectTimeoutSeconds int`
+  - Add `LiveProcessHangTimeoutSeconds int`
+  - Default both to `45`.
+  - Add normalize/validate bounds (positive, conservative upper bound).
+- Update tests in `internal/settingsstore/store_test.go` for defaults, round-trip, normalize behavior.
+- Update TUI settings form in `internal/tui/view_settings.go`:
+  - Add two input fields for the above settings.
+  - Save and runtime-apply values.
+- Update persisted-settings application path in `internal/tui/settings_persistence.go`.
+
+2. Python-level disconnect recovery (business-layer).
+- In `internal/live/live_md.py`:
+  - Keep existing connection/login/subscribe flow unchanged.
+  - Change `OnFrontDisconnected` behavior from immediate `stop()` to stateful disconnected mode.
+  - Track disconnect start timestamp.
+  - If disconnected duration exceeds `--disconnect_timeout_seconds`, exit with explicit stderr reason token (for Go classification).
+  - Add optional heartbeat notification to router at fixed interval (`5s`) independent of tick flow.
+- In Go launch args (`internal/live/runner.go`), pass `--disconnect_timeout_seconds` from settings.
+
+3. Go-level unified lifecycle + reconnect controller.
+- In `internal/tui/app.go`, implement unified reconnect state machine in active TUI lifecycle:
+  - Trigger reconnect only for classified disconnect-timeout exits.
+  - Retry interval `15s`, max attempts `12`.
+  - Retry only inside trading window.
+  - On exhaustion: `stopLiveProcess()` + `setScreen(screenMain)`.
+- Ensure manual `Esc` from Live explicitly calls `stopLiveProcess()` before returning to main.
+- Ensure fallback path always stops live/options/unusual processes.
+
+4. Trading-window gate adjustment.
+- Update `internal/metadata/trading_window.go`:
+  - Replace asymmetric lead logic with symmetric padding:
+    - `window_start = segment_start - 15m`
+    - `window_end = segment_end + 15m` (including overnight segments).
+- Add dedicated tests for:
+  - pre-open `+15m` inclusion,
+  - post-close `+15m` inclusion,
+  - overnight segment boundaries.
+
+5. Go-level hang failsafe (process health).
+- Implement heartbeat-based health tracking in TUI:
+  - Consume python heartbeat (via router logs or dedicated signal channel in existing pipeline).
+  - If heartbeat stale beyond `live_process_hang_timeout_seconds` (`45s`), do immediate fallback:
+    - stop all live processes,
+    - return to main screen,
+    - no reconnect attempts for this failure class.
+
+6. Remove obsolete lifecycle code after validation.
+- Delete:
+  - `cmd/starsling/supervisor.go`
+  - `cmd/starsling/keys.go`
+- Ensure no remaining compile-time references.
+
+## Test Plan
+1. Unit tests
+- `internal/settingsstore`:
+  - default values include new fields,
+  - normalize invalid values -> defaults,
+  - save/load round-trip with new fields.
+- `internal/metadata`:
+  - trading window symmetric ±15m behavior and overnight correctness.
+- `internal/tui`:
+  - live exit classification and reconnect scheduling (15s * 12),
+  - outside-window no retry,
+  - retry exhaustion fallback to main + processes stopped,
+  - `Esc` from Live stops all live processes,
+  - hang detection fallback behavior.
+
+2. Python sanity checks
+- `python3 /Users/daniel/projects/starSling/internal/live/live_md.py --help`
+- Validate argument parsing includes disconnect-timeout option.
+
+3. Project regression
+- `go test ./...`
+
+## Risks And Mitigations
+1. Risk: False-positive hang fallback from delayed heartbeat.
+- Mitigation: fixed 5s heartbeat + 45s timeout leaves wide margin.
+
+2. Risk: Exit-reason parsing brittle due to stderr formatting.
+- Mitigation: emit stable machine-readable reason token from python stderr and match exact token in Go.
+
+3. Risk: Trading-window gate mistakes around overnight segments.
+- Mitigation: add explicit boundary tests for both same-day and cross-midnight sessions.
+
+## Rollback Plan
+1. Revert TUI reconnect controller changes and heartbeat fallback.
+2. Revert python disconnect-stateful logic to prior immediate-stop behavior.
+3. Revert settings/trading-window updates.
+4. Restore deleted `cmd/starsling/supervisor.go` and `cmd/starsling/keys.go` if needed.
+5. Re-run `go test ./...`.
+
+## Structure Optimization Assessment
+Problem:
+- Lifecycle responsibilities are split and partially duplicated between historical `cmd` supervisor code and active TUI runtime path.
+
+Refactor Direction:
+- Keep a single lifecycle authority in active TUI runtime and remove dead supervisor path to reduce divergence risk.
+
+Action Plan:
+1. Implement unified lifecycle in TUI first.
+2. Validate reconnect/fallback behavior end-to-end.
+3. Remove unused `cmd` lifecycle files.
+
+Validation:
+- `go test ./...`
+- Manual smoke: disconnect network / restore network / sleep-wake / Esc out of Live.
+
+## Approval Gate
+Pending explicit user approval for this written execution plan.
+
+---
+
 # Task: Right-Bottom Unusual Panel Symbol/Contract Multi-Filter
 
 ## Request Summary
@@ -1000,3 +1185,79 @@ Validation:
 
 ## Approval Gate
 Approved by user in-thread ("确认").
+
+---
+
+# Task: Fix Two Live Lifecycle Review Findings (P1 + P2)
+
+## Request Summary
+Fix two review findings in `internal/tui/app.go`:
+1. Stale exit callback can tear down a newly restarted session.
+2. Router polling failures can falsely trigger live hang fallback.
+
+## Implementation Plan
+1. Harden stale-exit handling in `handleLiveProcessExit`.
+- Return early for `wasStopped` before stopping options/unusual workers or mutating heartbeat/reconnect state.
+- Keep normal non-stopped exit handling unchanged.
+
+2. Avoid false hang fallback during router RPC failures.
+- In `pollLiveSnapshot`, on `router.get_view_snapshot` error:
+  - keep logging the poll error,
+  - run reconnect scheduler only (`driveLiveReconnect(now)`),
+  - do **not** run hang check (`checkLiveProcessHang`) because heartbeat freshness cannot be observed on failed snapshots.
+
+3. Add regression tests in `internal/tui/app_test.go`.
+- Test that a stopped old process exit does not stop currently running workers.
+- Test that poll-error path does not run hang fallback while reconnect still runs (unit-level via lifecycle function path).
+
+## Test Plan
+1. `go test ./internal/tui -run 'HandleLiveProcessExit|DriveLiveLifecycle|LiveReconnect|LiveProcessHang'`
+2. `go test ./internal/tui`
+3. `go test ./...`
+
+## Risks And Mitigations
+- Risk: changing exit ordering could skip desired cleanup for genuine crashes.
+  - Mitigation: only early-return on explicit `proc.Stopped()`; crash path remains unchanged.
+- Risk: disabling hang checks on poll errors could delay true hang detection while router is degraded.
+  - Mitigation: reconnect scheduler still runs; hang checks resume automatically once snapshots recover.
+
+## Structure Optimization Assessment
+No additional structure refactor is needed for this scoped fix; both issues are localized lifecycle ordering concerns in existing `internal/tui` boundaries.
+
+## Approval Gate
+Pending explicit user approval for this plan.
+
+---
+
+# Task: Enforce Hang Timeout Floor To Match Heartbeat Cadence
+
+## Request Summary
+Fix review finding: `live_process_hang_timeout_seconds` currently accepts values below the live worker heartbeat interval, which can cause false hang fallback.
+
+## Implementation Plan
+1. Tighten settings bounds in `internal/settingsstore/store.go`.
+- Keep `live_disconnect_timeout_seconds` lower bound at `1`.
+- Introduce a dedicated lower bound for `live_process_hang_timeout_seconds` at `5`.
+- Apply this bound in both `Normalize()` and `Validate()`, and update validation error text.
+
+2. Align TUI form validation in `internal/tui/view_settings.go`.
+- Change hang-timeout parsing range from `[1, 3600]` to `[5, 3600]`.
+- Update the user-facing validation error text accordingly.
+
+3. Add regression coverage in `internal/settingsstore/store_test.go`.
+- Verify normalize fallback for hang timeout values below the new floor.
+- Verify `Validate()` rejects hang timeout values below the new floor.
+
+4. Validation.
+- Run `go test ./internal/settingsstore ./internal/tui`.
+- Run `go test ./...`.
+
+## Risks And Mitigations
+- Risk: users who intentionally configured values `<5` will be reset to default on load/save.
+  - Mitigation: behavior is safer than false-positive hang fallback and keeps constraints consistent with runtime heartbeat cadence.
+
+## Structure Optimization Assessment
+No project-structure refactor is needed; this is a localized settings-constraint correction.
+
+## Approval Gate
+Approved by user in-thread ("approved").

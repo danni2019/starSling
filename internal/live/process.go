@@ -26,15 +26,15 @@ type Process struct {
 	stopped bool
 }
 
-func Start(ctx context.Context, cfg config.LiveMDConfig, pythonPath string, routerAddr string, logger *slog.Logger) (*Process, error) {
-	return start(ctx, cfg, pythonPath, routerAddr, logger, os.Stdout, os.Stderr)
+func Start(ctx context.Context, cfg config.LiveMDConfig, pythonPath string, routerAddr string, disconnectTimeoutSeconds int, logger *slog.Logger) (*Process, error) {
+	return start(ctx, cfg, pythonPath, routerAddr, disconnectTimeoutSeconds, logger, os.Stdout, os.Stderr)
 }
 
-func StartDetached(ctx context.Context, cfg config.LiveMDConfig, pythonPath string, routerAddr string, logger *slog.Logger) (*Process, error) {
-	return start(ctx, cfg, pythonPath, routerAddr, logger, io.Discard, io.Discard)
+func StartDetached(ctx context.Context, cfg config.LiveMDConfig, pythonPath string, routerAddr string, disconnectTimeoutSeconds int, logger *slog.Logger) (*Process, error) {
+	return start(ctx, cfg, pythonPath, routerAddr, disconnectTimeoutSeconds, logger, io.Discard, io.Discard)
 }
 
-func start(ctx context.Context, cfg config.LiveMDConfig, pythonPath string, routerAddr string, logger *slog.Logger, stdout io.Writer, stderr io.Writer) (*Process, error) {
+func start(ctx context.Context, cfg config.LiveMDConfig, pythonPath string, routerAddr string, disconnectTimeoutSeconds int, logger *slog.Logger, stdout io.Writer, stderr io.Writer) (*Process, error) {
 	if len(cfg.Instruments) == 0 {
 		ids, err := metadata.LoadContractInstrumentIDs()
 		if err != nil {
@@ -53,7 +53,7 @@ func start(ctx context.Context, cfg config.LiveMDConfig, pythonPath string, rout
 		return nil, err
 	}
 
-	args := buildArgs(cfg, scriptPath, routerAddr)
+	args := buildArgs(cfg, scriptPath, routerAddr, disconnectTimeoutSeconds)
 	logger.Info("starting live md", "python", resolved, "host", cfg.Host, "port", cfg.Port)
 
 	cmdCtx, cancel := context.WithCancel(ctx)

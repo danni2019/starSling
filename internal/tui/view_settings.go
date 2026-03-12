@@ -49,11 +49,27 @@ func (ui *UI) buildSettingsScreen() tview.Primitive {
 		}
 		return (ch >= '0' && ch <= '9') || ch == '-' || ch == '+'
 	})
+	ui.settingsInputLiveDisconnectTimeout = tview.NewInputField().SetLabel("Live disconnect timeout(s): ")
+	ui.settingsInputLiveDisconnectTimeout.SetAcceptanceFunc(func(text string, ch rune) bool {
+		if ch == 0 {
+			return true
+		}
+		return (ch >= '0' && ch <= '9') || ch == '-' || ch == '+'
+	})
+	ui.settingsInputLiveProcessHangTimeout = tview.NewInputField().SetLabel("Live process hang timeout(s): ")
+	ui.settingsInputLiveProcessHangTimeout.SetAcceptanceFunc(func(text string, ch rune) bool {
+		if ch == 0 {
+			return true
+		}
+		return (ch >= '0' && ch <= '9') || ch == '-' || ch == '+'
+	})
 
 	ui.settingsForm.AddFormItem(ui.settingsInputRiskFree)
 	ui.settingsForm.AddFormItem(ui.settingsInputDaysInYear)
 	ui.settingsForm.AddFormItem(ui.settingsInputGammaFront)
 	ui.settingsForm.AddFormItem(ui.settingsInputGammaMid)
+	ui.settingsForm.AddFormItem(ui.settingsInputLiveDisconnectTimeout)
+	ui.settingsForm.AddFormItem(ui.settingsInputLiveProcessHangTimeout)
 
 	ui.settingsForm.AddButton("Save", func() {
 		ui.saveSettingsForm()
@@ -106,6 +122,12 @@ func (ui *UI) populateSettingsForm(cfg settingsstore.Settings) {
 	if ui.settingsInputGammaMid != nil {
 		ui.settingsInputGammaMid.SetText(strconv.Itoa(cfg.GammaBucketMidDays))
 	}
+	if ui.settingsInputLiveDisconnectTimeout != nil {
+		ui.settingsInputLiveDisconnectTimeout.SetText(strconv.Itoa(cfg.LiveDisconnectTimeoutSeconds))
+	}
+	if ui.settingsInputLiveProcessHangTimeout != nil {
+		ui.settingsInputLiveProcessHangTimeout.SetText(strconv.Itoa(cfg.LiveProcessHangTimeoutSeconds))
+	}
 }
 
 func (ui *UI) setSettingsStatus(message string) {
@@ -143,17 +165,41 @@ func (ui *UI) saveSettingsForm() {
 		ui.setSettingsStatus("invalid gamma mid days: must be integer and > front")
 		return
 	}
+	disconnectTimeout, ok := parseIntInRange(ui.settingsInputLiveDisconnectTimeout.GetText(), 1, 3600)
+	if !ok {
+		ui.setSettingsStatus("invalid live disconnect timeout: must be integer in [1, 3600]")
+		return
+	}
+	hangTimeout, ok := parseIntInRange(ui.settingsInputLiveProcessHangTimeout.GetText(), 5, 3600)
+	if !ok {
+		ui.setSettingsStatus("invalid live process hang timeout: must be integer in [5, 3600]")
+		return
+	}
 
 	restartOptionsWorker := current.RiskFreeRate != riskFree || current.DaysInYear != daysInYear
 	current.RiskFreeRate = riskFree
 	current.DaysInYear = daysInYear
 	current.GammaBucketFrontDays = frontDays
 	current.GammaBucketMidDays = midDays
+	current.LiveDisconnectTimeoutSeconds = disconnectTimeout
+	current.LiveProcessHangTimeoutSeconds = hangTimeout
 	if err := settingsstore.Save(current); err != nil {
 		ui.setSettingsStatus(err.Error())
 		return
 	}
+	ui.liveDisconnectTimeoutSeconds = disconnectTimeout
+	ui.liveProcessHangTimeoutSeconds = hangTimeout
 	ui.setSettingsStatus("settings saved")
-	ui.appendLiveLogLine(fmt.Sprintf("settings saved: r=%.6f days=%d gamma_buckets=%d/%d", riskFree, daysInYear, frontDays, midDays))
+	ui.appendLiveLogLine(
+		fmt.Sprintf(
+			"settings saved: r=%.6f days=%d gamma_buckets=%d/%d live_disconnect=%ds live_hang=%ds",
+			riskFree,
+			daysInYear,
+			frontDays,
+			midDays,
+			disconnectTimeout,
+			hangTimeout,
+		),
+	)
 	ui.applyGlobalSettingsRuntime(frontDays, midDays, restartOptionsWorker)
 }

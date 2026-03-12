@@ -151,6 +151,8 @@ func (ui *UI) applyPersistedSettings(cfg settingsstore.Settings) {
 	ui.unusualRatioThreshold = cfg.Unusual.TurnoverRatioThreshold
 	ui.unusualOIRatioThreshold = cfg.Unusual.OIRatioThreshold
 	ui.unusualFilterSymbol = cfg.Unusual.Symbol
+	ui.liveDisconnectTimeoutSeconds = cfg.LiveDisconnectTimeoutSeconds
+	ui.liveProcessHangTimeoutSeconds = cfg.LiveProcessHangTimeoutSeconds
 
 	selectedOnly, focusedOnly := normalizeExclusiveFlowFilters(cfg.Flow.OnlySelected, cfg.Flow.OnlyFocused)
 	ui.flowOnlySelectedContracts = selectedOnly

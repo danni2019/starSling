@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"math"
 	"strconv"
 	"strings"
@@ -11,6 +12,8 @@ import (
 	"github.com/rivo/tview"
 
 	"github.com/danni2019/starSling/internal/ipc"
+	"github.com/danni2019/starSling/internal/live"
+	"github.com/danni2019/starSling/internal/metadata"
 	"github.com/danni2019/starSling/internal/router"
 )
 
@@ -138,6 +141,198 @@ func TestApplyMarketSnapshotHandlesStaleTransitionWithoutSeqChange(t *testing.T)
 	ui.applyMarketSnapshot(router.MarketSnapshot{Seq: 1, Stale: false})
 	if len(ui.liveLogLines) != 2 || !strings.Contains(ui.liveLogLines[0], "market snapshot resumed") {
 		t.Fatalf("expected resumed log line, got: %v", ui.liveLogLines)
+	}
+}
+
+func TestClassifyLiveProcessExitReasonDetectsDisconnectTimeoutToken(t *testing.T) {
+	err := errors.New("exit status 2: exit_reason=front_disconnected_timeout")
+	if got := classifyLiveProcessExitReason(err); got != liveExitReasonDisconnectTimeoutToken {
+		t.Fatalf("classifyLiveProcessExitReason() = %q, want %q", got, liveExitReasonDisconnectTimeoutToken)
+	}
+	if got := classifyLiveProcessExitReason(errors.New("exit status 2: login timeout")); got != "" {
+		t.Fatalf("classifyLiveProcessExitReason() = %q, want empty for unrelated errors", got)
+	}
+}
+
+func TestObserveLiveHeartbeatTracksLatestHeartbeatLog(t *testing.T) {
+	ui := &UI{}
+	ts := time.Date(2026, 3, 12, 14, 30, 0, 0, time.UTC).UnixMilli()
+	ui.observeLiveHeartbeat(router.LogSnapshot{
+		Items: []router.LogLine{
+			{TS: ts, Level: "DEBUG", Source: "live_md", Message: "heartbeat"},
+		},
+	})
+	if !ui.liveHeartbeatSeen {
+		t.Fatalf("expected heartbeat to be observed")
+	}
+	if got := ui.liveHeartbeatAt.UnixMilli(); got != ts {
+		t.Fatalf("heartbeat timestamp mismatch: got %d want %d", got, ts)
+	}
+}
+
+func TestObserveLiveHeartbeatIgnoresStaleHeartbeatBeforeLiveStart(t *testing.T) {
+	startedAt := time.Date(2026, 3, 12, 14, 0, 0, 0, time.UTC)
+	ui := &UI{liveStartedAt: startedAt}
+
+	ui.observeLiveHeartbeat(router.LogSnapshot{
+		Items: []router.LogLine{
+			{TS: startedAt.Add(-time.Minute).UnixMilli(), Level: "DEBUG", Source: "live_md", Message: "heartbeat"},
+		},
+	})
+	if ui.liveHeartbeatSeen {
+		t.Fatalf("expected stale pre-start heartbeat to be ignored")
+	}
+	if !ui.liveHeartbeatAt.IsZero() {
+		t.Fatalf("expected no heartbeat timestamp, got %s", ui.liveHeartbeatAt.String())
+	}
+
+	freshTS := startedAt.Add(10 * time.Second).UnixMilli()
+	ui.observeLiveHeartbeat(router.LogSnapshot{
+		Items: []router.LogLine{
+			{TS: freshTS, Level: "DEBUG", Source: "live_md", Message: "heartbeat"},
+		},
+	})
+	if !ui.liveHeartbeatSeen {
+		t.Fatalf("expected post-start heartbeat to be observed")
+	}
+	if got := ui.liveHeartbeatAt.UnixMilli(); got != freshTS {
+		t.Fatalf("heartbeat timestamp mismatch: got %d want %d", got, freshTS)
+	}
+}
+
+func TestHandleLiveKeysEscStopsLiveAndReturnsMain(t *testing.T) {
+	ui := &UI{
+		app:                 tview.NewApplication(),
+		pages:               tview.NewPages(),
+		menu:                tview.NewList(),
+		liveReconnectActive: true,
+	}
+	ui.pages.AddPage(string(screenMain), tview.NewBox(), true, true)
+	ui.pages.AddPage(string(screenLive), tview.NewBox(), true, false)
+	ui.setCurrentScreen(screenLive)
+
+	ui.handleLiveKeys(tcell.NewEventKey(tcell.KeyEsc, 0, tcell.ModNone))
+
+	if ui.currentScreen() != screenMain {
+		t.Fatalf("expected ESC to return to main screen, got %s", ui.currentScreen())
+	}
+	if ui.liveReconnectActive {
+		t.Fatalf("expected ESC path to clear reconnect state")
+	}
+}
+
+func TestDriveLiveReconnectExhaustedFallsBackToMain(t *testing.T) {
+	ui := &UI{
+		app:                   tview.NewApplication(),
+		pages:                 tview.NewPages(),
+		menu:                  tview.NewList(),
+		liveReconnectActive:   true,
+		liveReconnectAttempts: liveReconnectMaxAttempts,
+	}
+	ui.pages.AddPage(string(screenMain), tview.NewBox(), true, true)
+	ui.pages.AddPage(string(screenLive), tview.NewBox(), true, false)
+	ui.setCurrentScreen(screenLive)
+
+	ui.driveLiveReconnect(time.Now())
+
+	if ui.currentScreen() != screenMain {
+		t.Fatalf("expected exhausted reconnect to fallback to main, got %s", ui.currentScreen())
+	}
+	if ui.liveReconnectActive {
+		t.Fatalf("expected reconnect state to reset after fallback")
+	}
+}
+
+func TestDriveLiveReconnectPausesOutsideTradingWindow(t *testing.T) {
+	loc := time.FixedZone("CST", 8*3600)
+	ui := &UI{
+		liveReconnectActive:      true,
+		liveReconnectAttempts:    0,
+		liveReconnectNextAttempt: time.Time{},
+		liveTradeTimeLocation:    loc,
+		liveTradeSegments: []metadata.TradeSegment{
+			{
+				Start: 9 * time.Hour,
+				End:   10 * time.Hour,
+			},
+		},
+	}
+	ui.setCurrentScreen(screenLive)
+	now := time.Date(2026, 3, 12, 3, 0, 0, 0, loc)
+
+	ui.driveLiveReconnect(now)
+
+	if !ui.liveReconnectPausedOutsideWindow {
+		t.Fatalf("expected reconnect to pause outside trading window")
+	}
+	if ui.liveReconnectAttempts != 0 {
+		t.Fatalf("expected no reconnect attempts outside trading window, got %d", ui.liveReconnectAttempts)
+	}
+}
+
+func TestHandleLiveProcessExitIgnoresStaleProcessCallback(t *testing.T) {
+	currentProc := &live.Process{}
+	startedAt := time.Date(2026, 3, 12, 14, 0, 0, 0, time.UTC)
+	heartbeatAt := startedAt.Add(10 * time.Second)
+	ui := &UI{
+		liveProc:          currentProc,
+		liveCancel:        func() {},
+		liveStartedAt:     startedAt,
+		liveHeartbeatSeen: true,
+		liveHeartbeatAt:   heartbeatAt,
+	}
+
+	ui.handleLiveProcessExit(&live.Process{}, errors.New("stale process exited"))
+
+	if ui.liveProc != currentProc {
+		t.Fatalf("expected active live process to be preserved on stale callback")
+	}
+	if ui.liveCancel == nil {
+		t.Fatalf("expected active live cancel func to be preserved on stale callback")
+	}
+	if !ui.liveStartedAt.Equal(startedAt) {
+		t.Fatalf("expected liveStartedAt unchanged, got %s want %s", ui.liveStartedAt, startedAt)
+	}
+	if !ui.liveHeartbeatSeen {
+		t.Fatalf("expected heartbeat seen flag unchanged")
+	}
+	if !ui.liveHeartbeatAt.Equal(heartbeatAt) {
+		t.Fatalf("expected heartbeat timestamp unchanged, got %s want %s", ui.liveHeartbeatAt, heartbeatAt)
+	}
+}
+
+func TestHandleLiveSnapshotPollErrorSkipsHangFallback(t *testing.T) {
+	ui := &UI{
+		app:                           tview.NewApplication(),
+		pages:                         tview.NewPages(),
+		menu:                          tview.NewList(),
+		liveProc:                      &live.Process{},
+		liveStartedAt:                 time.Now().Add(-2 * time.Second),
+		liveProcessHangTimeoutSeconds: 1,
+		liveReconnectActive:           true,
+	}
+	ui.pages.AddPage(string(screenMain), tview.NewBox(), true, true)
+	ui.pages.AddPage(string(screenLive), tview.NewBox(), true, false)
+	ui.setCurrentScreen(screenLive)
+
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("poll error path should not trigger hang fallback/stop: %v", recovered)
+		}
+	}()
+	ui.handleLiveSnapshotPollError(time.Now(), errors.New("router unavailable"))
+
+	if ui.currentScreen() != screenLive {
+		t.Fatalf("expected poll error path to keep live screen active, got %s", ui.currentScreen())
+	}
+	if ui.liveProc == nil {
+		t.Fatalf("expected live process to remain untouched on poll error")
+	}
+	if ui.liveReconnectActive {
+		t.Fatalf("expected reconnect scheduler to run and reset active flag when live proc is running")
+	}
+	if len(ui.liveLogLines) == 0 || !strings.Contains(ui.liveLogLines[0], "router poll failed:") {
+		t.Fatalf("expected router poll failure log, got %v", ui.liveLogLines)
 	}
 }
 

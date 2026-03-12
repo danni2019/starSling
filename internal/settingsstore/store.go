@@ -10,15 +10,20 @@ import (
 )
 
 const (
-	schemaVersion            = 1
-	settingsFileName         = "global_settings.json"
-	DefaultRiskFreeRate      = 0.01
-	DefaultDaysInYear        = 365
-	DefaultGammaBucketFront  = 30
-	DefaultGammaBucketMid    = 90
-	minPositiveDays          = 1
-	maxReasonableDaysInYear  = 370
-	maxReasonableGammaBucket = 370
+	schemaVersion                        = 1
+	settingsFileName                     = "global_settings.json"
+	DefaultRiskFreeRate                  = 0.01
+	DefaultDaysInYear                    = 365
+	DefaultGammaBucketFront              = 30
+	DefaultGammaBucketMid                = 90
+	DefaultLiveDisconnectTimeoutSeconds  = 45
+	DefaultLiveProcessHangTimeoutSeconds = 45
+	minPositiveDays                      = 1
+	maxReasonableDaysInYear              = 370
+	maxReasonableGammaBucket             = 370
+	minPositiveTimeoutSeconds            = 1
+	minLiveProcessHangTimeoutSeconds     = 5
+	maxReasonableTimeoutSeconds          = 3600
 )
 
 var userConfigDirFn = os.UserConfigDir
@@ -26,10 +31,12 @@ var userConfigDirFn = os.UserConfigDir
 type Settings struct {
 	SchemaVersion int `json:"schema_version"`
 
-	RiskFreeRate         float64 `json:"risk_free_rate"`
-	DaysInYear           int     `json:"days_in_year"`
-	GammaBucketFrontDays int     `json:"gamma_bucket_front_days"`
-	GammaBucketMidDays   int     `json:"gamma_bucket_mid_days"`
+	RiskFreeRate                  float64 `json:"risk_free_rate"`
+	DaysInYear                    int     `json:"days_in_year"`
+	GammaBucketFrontDays          int     `json:"gamma_bucket_front_days"`
+	GammaBucketMidDays            int     `json:"gamma_bucket_mid_days"`
+	LiveDisconnectTimeoutSeconds  int     `json:"live_disconnect_timeout_seconds"`
+	LiveProcessHangTimeoutSeconds int     `json:"live_process_hang_timeout_seconds"`
 
 	Overview  SettingsOverview  `json:"settings_overview"`
 	Market    SettingsMarket    `json:"settings_market"`
@@ -89,17 +96,19 @@ type SettingsArbitragePair struct {
 
 func Default() Settings {
 	return Settings{
-		SchemaVersion:        schemaVersion,
-		RiskFreeRate:         DefaultRiskFreeRate,
-		DaysInYear:           DefaultDaysInYear,
-		GammaBucketFrontDays: DefaultGammaBucketFront,
-		GammaBucketMidDays:   DefaultGammaBucketMid,
-		Overview:             SettingsOverview{SortBy: "turnover", SortAsc: false, RequireOptions: false},
-		Market:               SettingsMarket{SortBy: "vol", SortAsc: false},
-		Options:              SettingsOptions{DeltaEnabled: false, DeltaAbsMin: 0.25, DeltaAbsMax: 0.5},
-		Unusual:              SettingsUnusual{TurnoverChgThreshold: 100000.0, TurnoverRatioThreshold: 0.05, OIRatioThreshold: 0.05, Symbol: "", Contract: ""},
-		Flow:                 SettingsFlow{WindowSeconds: 120, MinAnalysisSeconds: 30, OnlySelected: false, OnlyFocused: false},
-		Arbitrage:            SettingsArbitrage{Formula: "", Pairs: nil},
+		SchemaVersion:                 schemaVersion,
+		RiskFreeRate:                  DefaultRiskFreeRate,
+		DaysInYear:                    DefaultDaysInYear,
+		GammaBucketFrontDays:          DefaultGammaBucketFront,
+		GammaBucketMidDays:            DefaultGammaBucketMid,
+		LiveDisconnectTimeoutSeconds:  DefaultLiveDisconnectTimeoutSeconds,
+		LiveProcessHangTimeoutSeconds: DefaultLiveProcessHangTimeoutSeconds,
+		Overview:                      SettingsOverview{SortBy: "turnover", SortAsc: false, RequireOptions: false},
+		Market:                        SettingsMarket{SortBy: "vol", SortAsc: false},
+		Options:                       SettingsOptions{DeltaEnabled: false, DeltaAbsMin: 0.25, DeltaAbsMax: 0.5},
+		Unusual:                       SettingsUnusual{TurnoverChgThreshold: 100000.0, TurnoverRatioThreshold: 0.05, OIRatioThreshold: 0.05, Symbol: "", Contract: ""},
+		Flow:                          SettingsFlow{WindowSeconds: 120, MinAnalysisSeconds: 30, OnlySelected: false, OnlyFocused: false},
+		Arbitrage:                     SettingsArbitrage{Formula: "", Pairs: nil},
 	}
 }
 
@@ -196,6 +205,12 @@ func (s *Settings) Normalize() {
 		if s.GammaBucketMidDays <= s.GammaBucketFrontDays {
 			s.GammaBucketFrontDays = defaults.GammaBucketFrontDays
 		}
+	}
+	if s.LiveDisconnectTimeoutSeconds < minPositiveTimeoutSeconds || s.LiveDisconnectTimeoutSeconds > maxReasonableTimeoutSeconds {
+		s.LiveDisconnectTimeoutSeconds = defaults.LiveDisconnectTimeoutSeconds
+	}
+	if s.LiveProcessHangTimeoutSeconds < minLiveProcessHangTimeoutSeconds || s.LiveProcessHangTimeoutSeconds > maxReasonableTimeoutSeconds {
+		s.LiveProcessHangTimeoutSeconds = defaults.LiveProcessHangTimeoutSeconds
 	}
 
 	s.Overview.SortBy = strings.ToLower(strings.TrimSpace(s.Overview.SortBy))
@@ -296,6 +311,12 @@ func (s Settings) Validate() error {
 	}
 	if s.GammaBucketMidDays <= s.GammaBucketFrontDays {
 		return fmt.Errorf("gamma_bucket_mid_days must be > gamma_bucket_front_days")
+	}
+	if s.LiveDisconnectTimeoutSeconds < minPositiveTimeoutSeconds || s.LiveDisconnectTimeoutSeconds > maxReasonableTimeoutSeconds {
+		return fmt.Errorf("live_disconnect_timeout_seconds must be in [1, %d]", maxReasonableTimeoutSeconds)
+	}
+	if s.LiveProcessHangTimeoutSeconds < minLiveProcessHangTimeoutSeconds || s.LiveProcessHangTimeoutSeconds > maxReasonableTimeoutSeconds {
+		return fmt.Errorf("live_process_hang_timeout_seconds must be in [%d, %d]", minLiveProcessHangTimeoutSeconds, maxReasonableTimeoutSeconds)
 	}
 	return nil
 }

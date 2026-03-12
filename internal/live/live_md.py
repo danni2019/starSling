@@ -16,6 +16,9 @@ from openctp_ctp import thostmduserapi as mdapi
 
 LOGIN_TIMEOUT_SECONDS = 60
 PUSH_INTERVAL_SECONDS = 0.5
+DEFAULT_DISCONNECT_TIMEOUT_SECONDS = 45
+HEARTBEAT_INTERVAL_SECONDS = 5.0
+EXIT_REASON_DISCONNECT_TIMEOUT = "front_disconnected_timeout"
 LOCAL_TZ = ZoneInfo("Asia/Shanghai")
 
 def log(message: str) -> None:
@@ -184,6 +187,10 @@ class MdSpi(mdapi.CThostFtdcMdSpi):
         self.failure_reason = ""
         self.tick_buff = {}
         self.contract_meta_data = self.__contract_meta__()
+        self.disconnected = False
+        self.disconnected_since = 0.0
+        self.disconnect_reason = ""
+        self.ever_login_ok = False
 
     def __contract_meta__(self):
         contract_rows = _parse_contract_metadata_rows(load_metadata_payload("contract"))
@@ -246,6 +253,11 @@ class MdSpi(mdapi.CThostFtdcMdSpi):
                 pass
 
     def OnFrontConnected(self) -> None:
+        if self.disconnected:
+            log("front reconnected")
+        self.disconnected = False
+        self.disconnected_since = 0.0
+        self.disconnect_reason = ""
         req = mdapi.CThostFtdcReqUserLoginField()
         if self.username:
             req.UserID = self.username
@@ -255,9 +267,12 @@ class MdSpi(mdapi.CThostFtdcMdSpi):
 
     def OnFrontDisconnected(self, nReason: int) -> None:
         log(f"front disconnected: {nReason}")
-        self.login_failed = True
-        self.failure_reason = f"front disconnected: {nReason}"
-        self.stop()
+        self.login_ok = False
+        self.disconnected = True
+        if self.disconnected_since <= 0:
+            self.disconnected_since = time.monotonic()
+        self.disconnect_reason = f"front disconnected: {nReason}"
+        self.failure_reason = self.disconnect_reason
 
     def OnRspUserLogin(self, pRspUserLogin, pRspInfo, nRequestID: int, bIsLast: bool) -> None:
         if pRspInfo is not None and pRspInfo.ErrorID != 0:
@@ -275,6 +290,10 @@ class MdSpi(mdapi.CThostFtdcMdSpi):
             return
 
         self.login_ok = True
+        self.ever_login_ok = True
+        self.disconnected = False
+        self.disconnected_since = 0.0
+        self.disconnect_reason = ""
         self.api.SubscribeMarketData([item.encode("utf-8") for item in self.instruments], len(self.instruments))
         log(f"subscribed {len(self.instruments)} instruments")
 
@@ -403,6 +422,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--password", default="", help="CTP password (optional)")
     parser.add_argument("--instruments", default="", help="Comma-separated instrument list")
     parser.add_argument("--router_addr", default=os.environ.get("STARSLING_ROUTER_ADDR", ""), help="Router tcp addr, e.g. 127.0.0.1:19090")
+    parser.add_argument("--disconnect_timeout_seconds", type=int, default=DEFAULT_DISCONNECT_TIMEOUT_SECONDS, help="Disconnect timeout before process exit")
     return parser.parse_args()
 
 
@@ -415,6 +435,9 @@ def main() -> int:
     instruments = parse_instruments(args.instruments)
     if not instruments:
         log("no instruments provided")
+        return 2
+    if args.disconnect_timeout_seconds <= 0:
+        log(f"invalid disconnect_timeout_seconds: {args.disconnect_timeout_seconds}")
         return 2
 
     front = f"{args.protocol}://{args.host}:{args.port}"
@@ -434,15 +457,33 @@ def main() -> int:
 
     start_ts = time.monotonic()
     last_push_ts = 0.0
+    last_heartbeat_ts = 0.0
     exit_code = 0
     while spi.running:
-        if not spi.login_ok and (time.monotonic() - start_ts) > LOGIN_TIMEOUT_SECONDS:
+        now_monotonic = time.monotonic()
+        if spi.disconnected and spi.disconnected_since > 0 and (now_monotonic - spi.disconnected_since) > args.disconnect_timeout_seconds:
+            log(f"disconnect timeout after {args.disconnect_timeout_seconds}s ({spi.disconnect_reason})")
+            log(f"exit_reason={EXIT_REASON_DISCONNECT_TIMEOUT}")
+            spi.login_failed = True
+            spi.failure_reason = EXIT_REASON_DISCONNECT_TIMEOUT
+            spi.stop()
+            exit_code = 2
+            break
+        if not spi.ever_login_ok and not spi.login_ok and (now_monotonic - start_ts) > LOGIN_TIMEOUT_SECONDS:
             log(f"login timeout after {LOGIN_TIMEOUT_SECONDS}s")
             spi.login_failed = True
             spi.failure_reason = "login timeout"
             spi.stop()
             exit_code = 2
             break
+        if now_monotonic - last_heartbeat_ts >= HEARTBEAT_INTERVAL_SECONDS:
+            last_heartbeat_ts = now_monotonic
+            publish_notification(router_target, "log.append", {
+                "ts": int(time.time() * 1000),
+                "level": "DEBUG",
+                "source": "live_md",
+                "message": "heartbeat",
+            })
         time.sleep(0.2)
         if not spi.login_ok:
             continue

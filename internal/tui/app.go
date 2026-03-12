@@ -26,6 +26,7 @@ import (
 	"github.com/danni2019/starSling/internal/logging"
 	"github.com/danni2019/starSling/internal/metadata"
 	"github.com/danni2019/starSling/internal/router"
+	"github.com/danni2019/starSling/internal/settingsstore"
 )
 
 type screen string
@@ -47,6 +48,11 @@ const defaultFlowWindowSeconds = 120
 const defaultFlowMinAnalysisSeconds = 30
 const maxVoiceQueueSize = 64
 const internalDebugUIEnv = "STARSLING_INTERNAL_DEBUG_UI"
+const liveReconnectInterval = 15 * time.Second
+const liveReconnectMaxAttempts = 12
+const liveReconnectWindowLocation = "Asia/Shanghai"
+const liveProcessHeartbeatMessage = "heartbeat"
+const liveExitReasonDisconnectTimeoutToken = "exit_reason=front_disconnected_timeout"
 
 var marketDisplaySortFields = []string{
 	"contract",
@@ -118,136 +124,158 @@ type UI struct {
 	configInputPass   *tview.InputField
 	configNameInput   *tview.InputField
 
-	settingsForm            *tview.Form
-	settingsStatus          *tview.TextView
-	settingsInputRiskFree   *tview.InputField
-	settingsInputDaysInYear *tview.InputField
-	settingsInputGammaFront *tview.InputField
-	settingsInputGammaMid   *tview.InputField
+	settingsForm                        *tview.Form
+	settingsStatus                      *tview.TextView
+	settingsInputRiskFree               *tview.InputField
+	settingsInputDaysInYear             *tview.InputField
+	settingsInputGammaFront             *tview.InputField
+	settingsInputGammaMid               *tview.InputField
+	settingsInputLiveDisconnectTimeout  *tview.InputField
+	settingsInputLiveProcessHangTimeout *tview.InputField
 
 	ticker *time.Ticker
 
-	liveProc                       *live.Process
-	liveCancel                     context.CancelFunc
-	optsProc                       *live.Process
-	optsCancel                     context.CancelFunc
-	unusualProc                    *live.Process
-	unusualCancel                  context.CancelFunc
-	liveStartMu                    sync.Mutex
-	liveStartStop                  context.CancelFunc
-	liveStarting                   bool
-	liveStartSeq                   uint64
-	liveStartPendingOptionsRestart bool
+	liveProc                         *live.Process
+	liveCancel                       context.CancelFunc
+	optsProc                         *live.Process
+	optsCancel                       context.CancelFunc
+	unusualProc                      *live.Process
+	unusualCancel                    context.CancelFunc
+	liveStartMu                      sync.Mutex
+	liveStartStop                    context.CancelFunc
+	liveStarting                     bool
+	liveStartSeq                     uint64
+	liveStartPendingOptionsRestart   bool
+	liveReconnectActive              bool
+	liveReconnectAttempts            int
+	liveReconnectNextAttempt         time.Time
+	liveReconnectPausedOutsideWindow bool
+	liveReconnectReason              string
+	liveHeartbeatSeen                bool
+	liveHeartbeatAt                  time.Time
+	liveStartedAt                    time.Time
+	liveTradeSegments                []metadata.TradeSegment
+	liveTradeSegmentsErr             error
+	liveTradeTimeLocation            *time.Location
 
-	lastMarketSeq             int64
-	lastMarketStale           bool
-	lastOverviewSeq           int64
-	lastOverviewStale         bool
-	overviewRows              []router.OverviewRow
-	overviewSortBy            string
-	overviewSortAsc           bool
-	overviewRequireOptions    bool
-	marketSortBy              string
-	marketSortAsc             bool
-	marketRawRows             []map[string]any
-	marketRows                []MarketRow
-	filterExchange            string
-	filterClass               string
-	filterSymbol              string
-	filterContract            string
-	filterMainOnly            bool
-	focusSymbol               string
-	focusSyncPending          bool
-	lastOptionsSeq            int64
-	lastOptionsStale          bool
-	lastOptionsKey            string
-	optionsRawRows            []map[string]any
-	optionsDeltaAbsMin        float64
-	optionsDeltaAbsMax        float64
-	optionsDeltaEnabled       bool
-	voiceEnabled              bool
-	voiceContracts            map[string]struct{}
-	voiceLastSpoken           map[string]time.Time
-	voiceLastPrice            map[string]float64
-	voiceUnavailable          bool
-	voicePlaybackEnabled      atomic.Bool
-	voiceMutedAt              time.Time
-	lastCurveContracts        []string
-	lastCurveSeq              int64
-	lastCurveStale            bool
-	lastUnusualSeq            int64
-	lastUnusualStale          bool
-	unusualRawRows            []map[string]any
-	lastLogsSeq               int64
-	unusualChgThreshold       float64
-	unusualRatioThreshold     float64
-	unusualOIRatioThreshold   float64
-	unusualFilterSymbol       string
-	liveLogLines              []string
-	flowWindowSeconds         int
-	flowMinAnalysisSeconds    int
-	flowOnlySelectedContracts bool
-	flowOnlyFocusedSymbol     bool
-	flowSortBy                string
-	flowSortAsc               bool
-	flowEvents                []flowEvent
-	flowSeen                  map[string]int64
-	flowPrevByContract        map[string]optionFrame
-	flowCurrByContract        map[string]optionFrame
-	flowHasResult             bool
-	useArbMonitor             bool
-	arbMonitors               []arbMonitorState
-	arbSelectedMonitorID      string
-	arbIDCounter              int
-	voiceQueue                chan string
-	logoTitleWidth            int
-	logoFrame                 int
-	lastWidth                 int
-	liveSettingsLoadSeq       atomic.Uint64
-	liveSettingsApplyPending  bool
-	liveSettingsApplySeq      uint64
-	liveSettingsApplyAfter    func()
-	liveFlowRenderQueued      atomic.Bool
-	liveFocusPollSymbol       atomic.Value // string
+	lastMarketSeq                 int64
+	lastMarketStale               bool
+	lastOverviewSeq               int64
+	lastOverviewStale             bool
+	overviewRows                  []router.OverviewRow
+	overviewSortBy                string
+	overviewSortAsc               bool
+	overviewRequireOptions        bool
+	marketSortBy                  string
+	marketSortAsc                 bool
+	marketRawRows                 []map[string]any
+	marketRows                    []MarketRow
+	filterExchange                string
+	filterClass                   string
+	filterSymbol                  string
+	filterContract                string
+	filterMainOnly                bool
+	focusSymbol                   string
+	focusSyncPending              bool
+	lastOptionsSeq                int64
+	lastOptionsStale              bool
+	lastOptionsKey                string
+	optionsRawRows                []map[string]any
+	optionsDeltaAbsMin            float64
+	optionsDeltaAbsMax            float64
+	optionsDeltaEnabled           bool
+	voiceEnabled                  bool
+	voiceContracts                map[string]struct{}
+	voiceLastSpoken               map[string]time.Time
+	voiceLastPrice                map[string]float64
+	voiceUnavailable              bool
+	voicePlaybackEnabled          atomic.Bool
+	voiceMutedAt                  time.Time
+	lastCurveContracts            []string
+	lastCurveSeq                  int64
+	lastCurveStale                bool
+	lastUnusualSeq                int64
+	lastUnusualStale              bool
+	unusualRawRows                []map[string]any
+	lastLogsSeq                   int64
+	unusualChgThreshold           float64
+	unusualRatioThreshold         float64
+	unusualOIRatioThreshold       float64
+	unusualFilterSymbol           string
+	liveDisconnectTimeoutSeconds  int
+	liveProcessHangTimeoutSeconds int
+	liveLogLines                  []string
+	flowWindowSeconds             int
+	flowMinAnalysisSeconds        int
+	flowOnlySelectedContracts     bool
+	flowOnlyFocusedSymbol         bool
+	flowSortBy                    string
+	flowSortAsc                   bool
+	flowEvents                    []flowEvent
+	flowSeen                      map[string]int64
+	flowPrevByContract            map[string]optionFrame
+	flowCurrByContract            map[string]optionFrame
+	flowHasResult                 bool
+	useArbMonitor                 bool
+	arbMonitors                   []arbMonitorState
+	arbSelectedMonitorID          string
+	arbIDCounter                  int
+	voiceQueue                    chan string
+	logoTitleWidth                int
+	logoFrame                     int
+	lastWidth                     int
+	liveSettingsLoadSeq           atomic.Uint64
+	liveSettingsApplyPending      bool
+	liveSettingsApplySeq          uint64
+	liveSettingsApplyAfter        func()
+	liveFlowRenderQueued          atomic.Bool
+	liveFocusPollSymbol           atomic.Value // string
 }
 
 func newUI(routerAddr string, logger *slog.Logger) *UI {
 	if logger == nil {
 		logger = logging.New("INFO")
 	}
+	tradeLocation := time.Local
+	if loaded, err := time.LoadLocation(liveReconnectWindowLocation); err == nil {
+		tradeLocation = loaded
+	}
 	mappings, err := metadata.LoadContractMappings()
 	if err != nil {
 		logger.Warn("load contract metadata mappings failed", "error", err)
 	}
 	ui := &UI{
-		app:                     tview.NewApplication(),
-		pages:                   tview.NewPages(),
-		logger:                  logger,
-		routerAddr:              strings.TrimSpace(routerAddr),
-		metadata:                mappings,
-		screen:                  screenMain,
-		overviewSortBy:          defaultOverviewSortBy,
-		overviewSortAsc:         false,
-		overviewRequireOptions:  false,
-		marketSortBy:            "vol",
-		marketSortAsc:           false,
-		unusualChgThreshold:     100000.0,
-		unusualRatioThreshold:   0.05,
-		unusualOIRatioThreshold: 0.05,
-		flowWindowSeconds:       defaultFlowWindowSeconds,
-		flowMinAnalysisSeconds:  defaultFlowMinAnalysisSeconds,
-		flowSortBy:              "total_turnover_sum",
-		flowSortAsc:             false,
-		useArbMonitor:           true,
-		optionsDeltaAbsMin:      defaultOptionsDeltaAbsMin,
-		optionsDeltaAbsMax:      defaultOptionsDeltaAbsMax,
-		voiceContracts:          make(map[string]struct{}),
-		voiceLastSpoken:         make(map[string]time.Time),
-		voiceLastPrice:          make(map[string]float64),
-		flowSeen:                make(map[string]int64),
-		flowPrevByContract:      make(map[string]optionFrame),
-		flowCurrByContract:      make(map[string]optionFrame),
-		voiceQueue:              make(chan string, maxVoiceQueueSize),
+		app:                           tview.NewApplication(),
+		pages:                         tview.NewPages(),
+		logger:                        logger,
+		routerAddr:                    strings.TrimSpace(routerAddr),
+		metadata:                      mappings,
+		screen:                        screenMain,
+		overviewSortBy:                defaultOverviewSortBy,
+		overviewSortAsc:               false,
+		overviewRequireOptions:        false,
+		marketSortBy:                  "vol",
+		marketSortAsc:                 false,
+		unusualChgThreshold:           100000.0,
+		unusualRatioThreshold:         0.05,
+		unusualOIRatioThreshold:       0.05,
+		flowWindowSeconds:             defaultFlowWindowSeconds,
+		flowMinAnalysisSeconds:        defaultFlowMinAnalysisSeconds,
+		flowSortBy:                    "total_turnover_sum",
+		flowSortAsc:                   false,
+		useArbMonitor:                 true,
+		optionsDeltaAbsMin:            defaultOptionsDeltaAbsMin,
+		optionsDeltaAbsMax:            defaultOptionsDeltaAbsMax,
+		liveDisconnectTimeoutSeconds:  settingsstore.DefaultLiveDisconnectTimeoutSeconds,
+		liveProcessHangTimeoutSeconds: settingsstore.DefaultLiveProcessHangTimeoutSeconds,
+		liveTradeTimeLocation:         tradeLocation,
+		voiceContracts:                make(map[string]struct{}),
+		voiceLastSpoken:               make(map[string]time.Time),
+		voiceLastPrice:                make(map[string]float64),
+		flowSeen:                      make(map[string]int64),
+		flowPrevByContract:            make(map[string]optionFrame),
+		flowCurrByContract:            make(map[string]optionFrame),
+		voiceQueue:                    make(chan string, maxVoiceQueueSize),
 	}
 	if ui.routerAddr != "" {
 		ui.rpcClient = ipc.NewClient(ui.routerAddr)
@@ -316,6 +344,7 @@ func (ui *UI) bindKeys() {
 func (ui *UI) handleLiveKeys(event *tcell.EventKey) *tcell.EventKey {
 	switch event.Key() {
 	case tcell.KeyEsc:
+		ui.stopLiveProcess()
 		ui.setScreen(screenMain)
 		return nil
 	case tcell.KeyTab:
@@ -383,6 +412,7 @@ func (ui *UI) setScreen(next screen) {
 			})
 		}()
 		ui.loadLivePersistedSettingsAsync(func() {
+			ui.refreshLiveTradeSegments()
 			ui.startLiveProcessIfNeeded()
 		})
 	case screenSetup, screenConfig, screenSettings:
@@ -995,22 +1025,35 @@ func (ui *UI) pollLiveSnapshot() {
 		FocusSymbol: focusSymbol,
 	}, &view)
 	ui.app.QueueUpdateDraw(func() {
+		now := time.Now()
 		if ui.currentScreen() != screenLive {
 			return
 		}
 		ui.logoFrame = (ui.logoFrame + 1) % 2
 		ui.updateLogo(ui.lastWidth)
 		if err != nil {
-			ui.appendLiveLogLine("router poll failed: " + err.Error())
+			ui.handleLiveSnapshotPollError(now, err)
 			return
 		}
+		ui.observeLiveHeartbeat(view.Logs)
 		ui.applyOverviewSnapshot(view.Overview)
 		ui.applyMarketSnapshot(view.Market)
 		ui.applyCurveSnapshot(view.Curve)
 		ui.applyOptionsSnapshot(view.Options)
 		ui.applyUnusualSnapshot(view.Unusual)
 		ui.applyRouterLogs(view.Logs)
+		ui.driveLiveLifecycle(now)
 	})
+}
+
+func (ui *UI) handleLiveSnapshotPollError(now time.Time, pollErr error) {
+	if pollErr == nil {
+		return
+	}
+	ui.appendLiveLogLine("router poll failed: " + pollErr.Error())
+	// Router snapshot failures can hide fresh heartbeat logs, so do not run
+	// hang detection here; keep reconnect scheduling active.
+	ui.driveLiveReconnect(now)
 }
 
 func (ui *UI) queueFlowRenderFromSelection() {
@@ -4689,12 +4732,13 @@ type liveStartupResult struct {
 	phaseLogs []string
 }
 
-func (ui *UI) startLiveProcessIfNeeded() {
+func (ui *UI) startLiveProcessIfNeeded() bool {
 	req, ok := ui.beginLiveStartupRequest()
 	if !ok {
-		return
+		return false
 	}
 	go ui.runLiveStartup(req)
+	return true
 }
 
 func (ui *UI) beginLiveStartupRequest() (liveStartupRequest, bool) {
@@ -4790,7 +4834,7 @@ func (ui *UI) runLiveStartup(req liveStartupRequest) {
 				parentCtx = context.Background()
 			}
 			liveCtx, cancel := context.WithCancel(parentCtx)
-			proc, startErr := live.StartDetached(liveCtx, cfg.LiveMD, "", req.routerAddr, ui.logger)
+			proc, startErr := live.StartDetached(liveCtx, cfg.LiveMD, "", req.routerAddr, ui.liveDisconnectTimeoutSeconds, ui.logger)
 			if startErr != nil {
 				cancel()
 				result.liveErr = fmt.Errorf("start live md failed: %w", startErr)
@@ -4858,6 +4902,9 @@ func (ui *UI) applyLiveStartupResult(result liveStartupResult) {
 	if err := result.liveErr; err != nil {
 		ui.appendLiveLogLine(err.Error())
 		ui.stopDetachedStartupProcesses(result)
+		if ui.liveReconnectActive && ui.liveReconnectAttempts >= liveReconnectMaxAttempts {
+			ui.fallbackLiveToMain("live md reconnect exhausted (15s * 12); returning to main screen")
+		}
 		return
 	}
 
@@ -4870,7 +4917,14 @@ func (ui *UI) applyLiveStartupResult(result liveStartupResult) {
 		} else {
 			ui.liveCancel = result.liveCancel
 			ui.liveProc = result.liveProc
+			ui.liveStartedAt = time.Now()
+			ui.liveHeartbeatSeen = false
+			ui.liveHeartbeatAt = time.Time{}
 			ui.appendLiveLogLine(fmt.Sprintf("live md started on %s:%d", result.liveCfg.LiveMD.Host, result.liveCfg.LiveMD.Port))
+			if ui.liveReconnectActive {
+				ui.appendLiveLogLine("live md reconnect succeeded")
+				ui.resetLiveReconnectState()
+			}
 			ui.watchLiveProcessExit(result.liveProc)
 		}
 	}
@@ -4961,6 +5015,10 @@ func (ui *UI) stopLiveProcess() {
 		ui.liveProc.Stop()
 		ui.liveProc = nil
 	}
+	ui.liveStartedAt = time.Time{}
+	ui.liveHeartbeatSeen = false
+	ui.liveHeartbeatAt = time.Time{}
+	ui.resetLiveReconnectState()
 	ui.stopOptionsWorker()
 	ui.stopUnusualWorker()
 }
@@ -4972,19 +5030,212 @@ func (ui *UI) watchLiveProcessExit(proc *live.Process) {
 	go func(startedProc *live.Process) {
 		err := <-startedProc.Exit()
 		ui.app.QueueUpdateDraw(func() {
-			if err != nil {
-				ui.appendLiveLogLine("live md exited: " + err.Error())
-			} else {
-				ui.appendLiveLogLine("live md exited")
-			}
-			if ui.liveProc == startedProc {
-				ui.liveProc = nil
-				ui.liveCancel = nil
-			}
-			ui.stopOptionsWorker()
-			ui.stopUnusualWorker()
+			ui.handleLiveProcessExit(startedProc, err)
 		})
 	}(proc)
+}
+
+func (ui *UI) handleLiveProcessExit(startedProc *live.Process, err error) {
+	wasStopped := startedProc != nil && startedProc.Stopped()
+	if err != nil {
+		ui.appendLiveLogLine("live md exited: " + err.Error())
+	} else {
+		ui.appendLiveLogLine("live md exited")
+	}
+	// Ignore stale callbacks from prior sessions; teardown is owned by the active process.
+	if ui.liveProc != startedProc {
+		return
+	}
+	ui.liveProc = nil
+	ui.liveCancel = nil
+	if wasStopped {
+		return
+	}
+	ui.liveStartedAt = time.Time{}
+	ui.liveHeartbeatSeen = false
+	ui.liveHeartbeatAt = time.Time{}
+	ui.stopOptionsWorker()
+	ui.stopUnusualWorker()
+	if reason := classifyLiveProcessExitReason(err); reason == liveExitReasonDisconnectTimeoutToken {
+		if ui.liveReconnectActive {
+			if ui.liveReconnectAttempts >= liveReconnectMaxAttempts {
+				ui.fallbackLiveToMain("live md reconnect exhausted (15s * 12); returning to main screen")
+			}
+			return
+		}
+		ui.activateLiveReconnect(reason)
+	}
+}
+
+func classifyLiveProcessExitReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	message := strings.ToLower(strings.TrimSpace(err.Error()))
+	if strings.Contains(message, liveExitReasonDisconnectTimeoutToken) {
+		return liveExitReasonDisconnectTimeoutToken
+	}
+	return ""
+}
+
+func (ui *UI) activateLiveReconnect(reason string) {
+	if ui.liveReconnectActive {
+		return
+	}
+	if ui.currentScreen() != screenLive {
+		return
+	}
+	ui.liveReconnectActive = true
+	ui.liveReconnectAttempts = 0
+	ui.liveReconnectNextAttempt = time.Now().Add(liveReconnectInterval)
+	ui.liveReconnectPausedOutsideWindow = false
+	ui.liveReconnectReason = strings.TrimSpace(reason)
+	ui.appendLiveLogLine(
+		fmt.Sprintf(
+			"live md reconnect armed: reason=%s interval=%s max_attempts=%d",
+			defaultDash(ui.liveReconnectReason),
+			liveReconnectInterval.String(),
+			liveReconnectMaxAttempts,
+		),
+	)
+}
+
+func (ui *UI) resetLiveReconnectState() {
+	ui.liveReconnectActive = false
+	ui.liveReconnectAttempts = 0
+	ui.liveReconnectNextAttempt = time.Time{}
+	ui.liveReconnectPausedOutsideWindow = false
+	ui.liveReconnectReason = ""
+}
+
+func (ui *UI) driveLiveLifecycle(now time.Time) {
+	ui.checkLiveProcessHang(now)
+	ui.driveLiveReconnect(now)
+}
+
+func (ui *UI) driveLiveReconnect(now time.Time) {
+	if !ui.liveReconnectActive {
+		return
+	}
+	if ui.currentScreen() != screenLive {
+		ui.resetLiveReconnectState()
+		return
+	}
+	if ui.liveProc != nil && !ui.liveProc.Done() {
+		ui.resetLiveReconnectState()
+		return
+	}
+	if !ui.liveReconnectInTradingWindow(now) {
+		if !ui.liveReconnectPausedOutsideWindow {
+			ui.appendLiveLogLine("live md reconnect paused: outside trading window")
+			ui.liveReconnectPausedOutsideWindow = true
+		}
+		return
+	}
+	if ui.liveReconnectPausedOutsideWindow {
+		ui.appendLiveLogLine("live md reconnect resumed: back in trading window")
+		ui.liveReconnectPausedOutsideWindow = false
+	}
+	if !ui.liveReconnectNextAttempt.IsZero() && now.Before(ui.liveReconnectNextAttempt) {
+		return
+	}
+	if ui.liveReconnectAttempts >= liveReconnectMaxAttempts {
+		ui.fallbackLiveToMain("live md reconnect exhausted (15s * 12); returning to main screen")
+		return
+	}
+	if !ui.startLiveProcessIfNeeded() {
+		ui.liveReconnectNextAttempt = now.Add(time.Second)
+		return
+	}
+	ui.liveReconnectAttempts++
+	ui.liveReconnectNextAttempt = now.Add(liveReconnectInterval)
+	ui.appendLiveLogLine(fmt.Sprintf("live md reconnect attempt %d/%d", ui.liveReconnectAttempts, liveReconnectMaxAttempts))
+}
+
+func (ui *UI) liveReconnectInTradingWindow(now time.Time) bool {
+	if ui.liveTradeSegmentsErr != nil || len(ui.liveTradeSegments) == 0 {
+		return true
+	}
+	locNow := now
+	if ui.liveTradeTimeLocation != nil {
+		locNow = now.In(ui.liveTradeTimeLocation)
+	}
+	return metadata.InTradingWindow(locNow, ui.liveTradeSegments)
+}
+
+func (ui *UI) refreshLiveTradeSegments() {
+	segments, err := metadata.LoadTradeSegments()
+	ui.liveTradeSegments = segments
+	ui.liveTradeSegmentsErr = err
+	if err != nil {
+		ui.appendLiveLogLine("trade_time unavailable; reconnect window gating disabled")
+		return
+	}
+}
+
+func (ui *UI) fallbackLiveToMain(reason string) {
+	if strings.TrimSpace(reason) != "" {
+		ui.appendLiveLogLine(reason)
+	}
+	ui.stopLiveProcess()
+	if ui.currentScreen() != screenMain {
+		ui.setScreen(screenMain)
+	}
+}
+
+func (ui *UI) observeLiveHeartbeat(snapshot router.LogSnapshot) {
+	if len(snapshot.Items) == 0 {
+		return
+	}
+	startedAt := ui.liveStartedAt
+	for _, item := range snapshot.Items {
+		if !strings.EqualFold(strings.TrimSpace(item.Source), "live_md") {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(item.Level), "DEBUG") {
+			continue
+		}
+		if strings.TrimSpace(item.Message) != liveProcessHeartbeatMessage {
+			continue
+		}
+		observedAt := time.Now()
+		if item.TS > 0 {
+			observedAt = time.UnixMilli(item.TS)
+		}
+		if !startedAt.IsZero() && observedAt.Before(startedAt) {
+			continue
+		}
+		if !ui.liveHeartbeatSeen || observedAt.After(ui.liveHeartbeatAt) {
+			ui.liveHeartbeatSeen = true
+			ui.liveHeartbeatAt = observedAt
+		}
+		return
+	}
+}
+
+func (ui *UI) checkLiveProcessHang(now time.Time) {
+	if ui.liveProc == nil || ui.liveProc.Done() {
+		return
+	}
+	if ui.currentScreen() != screenLive {
+		return
+	}
+	if ui.liveProcessHangTimeoutSeconds <= 0 {
+		return
+	}
+	timeout := time.Duration(ui.liveProcessHangTimeoutSeconds) * time.Second
+	if !ui.liveHeartbeatSeen {
+		if ui.liveStartedAt.IsZero() {
+			return
+		}
+		if now.Sub(ui.liveStartedAt) >= timeout {
+			ui.fallbackLiveToMain(fmt.Sprintf("live md hang detected: no heartbeat for %s", timeout.String()))
+		}
+		return
+	}
+	if now.Sub(ui.liveHeartbeatAt) >= timeout {
+		ui.fallbackLiveToMain(fmt.Sprintf("live md hang detected: heartbeat stale for %s", timeout.String()))
+	}
 }
 
 func (ui *UI) startOptionsWorkerIfNeeded() {
