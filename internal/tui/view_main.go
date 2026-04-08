@@ -42,7 +42,7 @@ func (ui *UI) buildMainScreen() tview.Primitive {
 		ui.openLiveScreenFromMain()
 	})
 	ui.menu.AddItem("Setup Python runtime", "", 0, func() {
-		ui.setScreen(screenSetup)
+		ui.openSetupScreen(false, false)
 	})
 	ui.menu.AddItem("Config", "", 0, func() {
 		ui.setScreen(screenConfig)
@@ -83,6 +83,13 @@ func (ui *UI) buildMainScreen() tview.Primitive {
 }
 
 func (ui *UI) openLiveScreenFromMain() {
+	if runtimeBootstrapNeeded() {
+		ui.promptRuntimeBootstrapRequired(
+			"Live Market Data requires a local Python runtime first.\n\nOpen Setup to run the bundled bootstrap flow before continuing.",
+			true,
+		)
+		return
+	}
 	configName, cfg, err := configstore.LoadDefault()
 	if err != nil {
 		ui.promptLiveConfigRequired(fmt.Sprintf("Load config failed.\n\nConfigure Host and Port in Config before entering Live Market Data.\n\nDetails: %s", err.Error()))
@@ -93,6 +100,16 @@ func (ui *UI) openLiveScreenFromMain() {
 		return
 	}
 	ui.setScreen(screenLive)
+}
+
+func (ui *UI) promptRuntimeBootstrapRequired(message string, resumeLive bool) {
+	ui.showModal("runtime-bootstrap-required", message, []string{"Open Setup", "Later"}, func(index int, _ string) {
+		if index == 0 {
+			ui.openSetupScreen(true, resumeLive)
+			return
+		}
+		ui.app.SetFocus(ui.menu)
+	})
 }
 
 func (ui *UI) promptLiveConfigRequired(message string) {

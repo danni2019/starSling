@@ -6,7 +6,7 @@
 
 - 发布产物结构完整；
 - 运行时引导材料齐全；
-- 首次用户路径有明确文档；
+- 首次用户路径已经收敛为“下载后先运行 `./starsling`，再按应用内引导进入 Setup”；
 - 仓库默认值不会把真实运营配置带入公开版本。
 
 ## Scope
@@ -39,9 +39,21 @@ go run ./cmd/starsling doctor
 
 如果 `doctor` 仅提示 `bundled python` 缺失，这是允许的：当前 prerelease 仍依赖 bootstrap 步骤来准备本地 Python runtime。
 
-### 2. Runtime Bootstrap
+### 2. First-Run Bootstrap Flow
 
-如需验证本地运行时引导路径，可执行：
+先按最终用户路径验证：
+
+```bash
+./starsling
+```
+
+预期行为：
+
+- 如果 bundled runtime 尚未准备好，主界面会提示进入 `Setup Python runtime`
+- 从 `Live market data` 入口进入时，如 runtime 缺失，也会被引导到 Setup
+- bootstrap 完成后，可继续配置 `Host/Port` 并进入 Live
+
+如需验证手动 fallback 路径，也可执行：
 
 ```bash
 ./scripts/bootstrap_python.sh
@@ -79,6 +91,7 @@ goreleaser release --snapshot --clean
 ## Known Limits
 
 - 当前 prerelease 不承诺外部行情依赖全部一键安装完成。
+- 当前“首次初始化”仍需要通过应用内 Setup 调用 bootstrap；只是不再要求用户先 clone 仓库或手动寻找脚本入口。
 - 默认 `live-md.host` 为空、`live-md.port` 为 `0`；用户必须先在 `Config` 页面配置真实值。
 - 如果 `goreleaser` 尚未安装，本文件中的发布 dry-run 步骤无法在本机执行，但 `doctor` 与 `go test ./...` 仍应先通过。
 

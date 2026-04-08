@@ -4,8 +4,6 @@ import (
 	"strings"
 
 	"github.com/rivo/tview"
-
-	"github.com/danni2019/starSling/internal/runtime"
 )
 
 func (ui *UI) buildSetupScreen() tview.Primitive {
@@ -56,6 +54,18 @@ func (ui *UI) buildSetupScreen() tview.Primitive {
 
 func (ui *UI) showSetupMenu() {
 	ui.app.SetFocus(ui.setupActions)
+	if !ui.setupAutoStart {
+		return
+	}
+	ui.setupAutoStart = false
+	go func() {
+		ui.app.QueueUpdateDraw(func() {
+			if ui.currentScreen() != screenSetup {
+				return
+			}
+			ui.startBootstrap()
+		})
+	}()
 }
 
 func (ui *UI) startBootstrap() {
@@ -67,15 +77,24 @@ func (ui *UI) startBootstrap() {
 	ui.setupOutput.SetText("")
 
 	go func() {
-		output, err := runtime.RunBootstrap()
+		output, err := runBootstrapFn()
 		ui.app.QueueUpdateDraw(func() {
-			ui.setupRunning = false
-			if err != nil {
-				ui.setupStatus.SetText("Error: " + err.Error())
-			} else {
-				ui.setupStatus.SetText("Completed.")
-			}
-			ui.setupOutput.SetText(strings.TrimSpace(output))
+			ui.finishBootstrap(output, err)
 		})
 	}()
+}
+
+func (ui *UI) finishBootstrap(output string, err error) {
+	ui.setupRunning = false
+	if err != nil {
+		ui.setupStatus.SetText("Error: " + err.Error())
+	} else {
+		ui.setupStatus.SetText("Completed.")
+	}
+	ui.setupOutput.SetText(strings.TrimSpace(output))
+	if err != nil || !ui.setupResumeLive {
+		return
+	}
+	ui.setupResumeLive = false
+	ui.openLiveScreenFromMain()
 }

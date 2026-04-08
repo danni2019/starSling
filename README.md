@@ -62,7 +62,8 @@ Live 多面板界面：
 
 ### 运行时与发布辅助
 
-- `scripts/bootstrap_python.sh` 可引导本地 Python runtime
+- `Setup Python runtime` 页面可在应用内引导首次 bootstrap
+- `scripts/bootstrap_python.sh` 仍可作为手动 fallback
 - `go run ./cmd/starsling doctor` 可执行发布/环境自检
 - metadata 源配置、缓存目录与默认配置路径都已文档化
 - `macOS` prerelease 已具备本地 `goreleaser` dry-run 验证路径
@@ -75,7 +76,20 @@ Live 多面板界面：
 
 ## 快速开始
 
-### 环境要求
+### 从 GitHub Release 运行
+
+1. 从 GitHub Releases 下载对应平台的压缩包并解压
+2. 在解压目录中运行：
+
+```bash
+./starsling
+```
+
+3. 如果本地 runtime 尚未初始化，应用会提示进入 `Setup Python runtime`
+4. 完成 bootstrap 后，再在 `Config` 页面填写真实 `Host` / `Port`
+5. 然后进入 `Live market data`
+
+### 从源码本地运行
 
 - Go `1.25+`
 - Bash、curl、tar
@@ -94,9 +108,9 @@ go build ./cmd/starsling
 go run ./cmd/starsling
 ```
 
-### 初始化 Python runtime
+### 手动初始化 Python runtime（可选）
 
-推荐首次执行：
+release 用户现在可以先运行 `./starsling`，再按应用内引导进入 `Setup Python runtime`。如果你更希望手动执行，也可以直接运行：
 
 ```bash
 ./scripts/bootstrap_python.sh
@@ -127,6 +141,7 @@ go run ./cmd/starsling doctor
 
 - 发布包与仓库默认配置中，`live-md.host` 为空，`live-md.port` 为 `0`
 - 不预设任何 front 地址
+- 如果 bundled runtime 尚未准备好，主界面和 `Live market data` 入口都会引导进入 `Setup Python runtime`
 - 进入应用后，请先在 `Config` 页面填写真实可用的 `Host` 与 `Port`
 - 未完成配置前，UI 不允许进入 `Live market data`
 
@@ -154,6 +169,7 @@ STARSLING_INTERNAL_DEBUG_UI=1 go run ./cmd/starsling
 
 - 仓库已公开
 - 当前发布目标优先为 `macOS prerelease`
+- 当前用户路径已经收敛为：`下载 -> 解压 -> 运行 ./starsling -> 按应用内引导完成首次初始化`
 - 本地已通过：
   - `goreleaser check`
   - `goreleaser release --snapshot --clean`

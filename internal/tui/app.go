@@ -102,10 +102,12 @@ type UI struct {
 	focusables []tview.Primitive
 	focusIndex int
 
-	setupStatus  *tview.TextView
-	setupOutput  *tview.TextView
-	setupActions *tview.List
-	setupRunning bool
+	setupStatus     *tview.TextView
+	setupOutput     *tview.TextView
+	setupActions    *tview.List
+	setupRunning    bool
+	setupAutoStart  bool
+	setupResumeLive bool
 
 	configPages       *tview.Pages
 	configMenu        *tview.List
@@ -230,6 +232,7 @@ type UI struct {
 	liveSettingsApplyAfter        func()
 	liveFlowRenderQueued          atomic.Bool
 	liveFocusPollSymbol           atomic.Value // string
+	startupRuntimePrompted        bool
 }
 
 func newUI(routerAddr string, logger *slog.Logger) *UI {
@@ -290,6 +293,7 @@ func newUI(routerAddr string, logger *slog.Logger) *UI {
 	ui.app.SetRoot(ui.pages, true)
 	ui.app.SetBeforeDrawFunc(ui.beforeDraw)
 	ui.app.SetFocus(ui.menu)
+	ui.maybePromptRuntimeBootstrapOnStartup()
 
 	return ui
 }

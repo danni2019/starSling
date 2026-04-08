@@ -12,39 +12,35 @@
 
 ### Name
 
-Finalize public-facing docs: README, roadmap, and legacy tracking-file cleanup
+Guide first-run runtime bootstrap from inside the app
 
 ### Request Summary
 
-按当前项目设计与公开仓库状态，重写 README、更新 roadmap，并完成旧根目录追踪文件迁移后的文档收尾。
+在确认 macOS 无法提供 `openctp` 自包含 release 之后，将首次初始化路径收敛为“用户下载压缩包并先运行 `./starsling`，由应用内引导完成 Python runtime bootstrap”，而不是要求用户先阅读文档再手动执行脚本。
 
 ### Plan
 
-1. 重写 `README.md`，使其与当前公开仓库定位、当前 UI 设计、发布状态和运行方式一致。
-2. 将 `docs/misc/` 下的两张项目截图嵌入 `README.md`。
-3. 更新 `docs/project/roadmap.md`，按当前项目结构与公开阶段目标重写路线图。
-4. 保持 `docs/maintainers/worklog.md`、`docs/project/roadmap.md`、`docs/release/public-readiness.md` 为新文档入口，并确认旧根目录追踪文件继续作为删除项保留。
-5. 做文档级验证：
-   - 检查旧追踪文件引用是否还残留；
-   - 检查 README 图片路径和 docs 链接是否正确。
+1. 为主界面增加 runtime 缺失引导，并在 `Live market data` 入口优先检查 bundled runtime。
+2. 复用现有 `Setup Python runtime` 页面，支持引导式自动运行 bootstrap。
+3. 在 bootstrap 成功后按来源恢复流程：
+   - 若来自 `Live` 入口，则自动重试进入 Live；
+   - 若仅是首次启动提醒，则停留在 setup/main 流程中。
+4. 更新 README / release 文档，把用户路径改成“下载 -> 解压 -> 运行 `./starsling` -> 按应用内引导完成初始化”。
+5. 补充 `internal/tui` 测试并运行 `go test ./internal/tui`、`go test ./...`。
 
 ### Approval
 
-Approved by user in-thread on 2026-04-08 ("确认").
+Approved by user in-thread on 2026-04-08 ("ok").
 
 ### Validation
 
-- `rg -n "model_action_plan\\.md|Roadmap\\.md|plan\\.md" .` returned no matches.
-- Verified `README.md` references:
-  - `docs/misc/screenshot_starSling.png`
-  - `docs/misc/screenshot_main_panel.png`
-  - `docs/project/roadmap.md`
+- `gofmt -w internal/tui/app.go internal/tui/bootstrap_flow.go internal/tui/view_main.go internal/tui/view_setup.go internal/tui/view_main_test.go` passed.
+- `go test ./internal/tui` passed.
+- `go test ./...` passed.
+- Updated user-facing docs:
+  - `README.md`
   - `docs/release/public-readiness.md`
   - `docs/release/macos-prerelease.md`
-- Rewrote `README.md` for the current public-repo state and current default UI layout.
-- Updated `docs/project/roadmap.md` to reflect the public-stage roadmap.
-- Updated `docs/release/public-readiness.md` to reflect that the repository is already public.
-- `go test ./...` passed.
 
 ### Postmortem
 

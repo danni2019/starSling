@@ -13,6 +13,7 @@
 - [x] 已补齐 `LICENSE`、`SECURITY.md`、`CONTRIBUTING.md`、issue / PR 模板。
 - [x] 样例与默认 `live-md.host` / `live-md.port` 已改为未配置态（空 `host` + `port=0`）。
 - [x] 未配置真实 `Host` / `Port` 时，UI 会阻止进入 `Live market data`。
+- [x] 若 bundled runtime 缺失，主界面与 `Live market data` 入口都会引导进入 `Setup Python runtime`。
 - [x] `.con` 运行时缓存文件已从版本控制中移除，并继续由 `.gitignore` 忽略。
 - [x] README 已明确 `macOS` prerelease 的定位与外部依赖边界。
 - [x] 已落地 `.goreleaser.yaml` 与 GitHub release workflow 骨架。
@@ -76,7 +77,7 @@
 
 ## Positioning Notes
 
-- 当前发布目标是“让新用户能按文档跑起来”，不是“所有依赖一键打包完成”。
+- 当前发布目标是“让新用户下载压缩包后先运行 `./starsling`，并按应用内引导完成首次初始化”，不是“所有依赖一键打包完成”。
 - `OpenCTP` 相关环境、wheel 和服务接入仍可能需要用户自行准备。
 - 公开发布前，应始终把 operator-specific 配置、私有索引和真实凭证排除在仓库之外。
 - 仓库已经切换为 `public`；每次推送社区文件或仓库设置变更后，都应回到 GitHub `Security` / `Rules` / `Insights` 页面复核状态。
