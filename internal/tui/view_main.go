@@ -1,9 +1,12 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/rivo/tview"
+
+	"github.com/danni2019/starSling/internal/configstore"
 )
 
 func (ui *UI) buildMainScreen() tview.Primitive {
@@ -36,7 +39,7 @@ func (ui *UI) buildMainScreen() tview.Primitive {
 	ui.menu.SetBackgroundColor(colorBackground)
 
 	ui.menu.AddItem("Live market data", "", 0, func() {
-		ui.setScreen(screenLive)
+		ui.openLiveScreenFromMain()
 	})
 	ui.menu.AddItem("Setup Python runtime", "", 0, func() {
 		ui.setScreen(screenSetup)
@@ -77,6 +80,32 @@ func (ui *UI) buildMainScreen() tview.Primitive {
 
 	root.SetBackgroundColor(colorBackground)
 	return root
+}
+
+func (ui *UI) openLiveScreenFromMain() {
+	configName, cfg, err := configstore.LoadDefault()
+	if err != nil {
+		ui.promptLiveConfigRequired(fmt.Sprintf("Load config failed.\n\nConfigure Host and Port in Config before entering Live Market Data.\n\nDetails: %s", err.Error()))
+		return
+	}
+	if err := cfg.ValidateLiveMD(); err != nil {
+		ui.promptLiveConfigRequired(fmt.Sprintf("Config %q is not ready for Live Market Data.\n\nConfigure Host and Port in Config before continuing.\n\nDetails: %s", configName, err.Error()))
+		return
+	}
+	ui.setScreen(screenLive)
+}
+
+func (ui *UI) promptLiveConfigRequired(message string) {
+	ui.showModal("live-config-required", message, []string{"Open Config", "Cancel"}, func(index int, _ string) {
+		if index == 0 {
+			if ui.configStatus != nil {
+				ui.setConfigStatus("Configure Host and Port before starting Live Market Data.")
+			}
+			ui.setScreen(screenConfig)
+			return
+		}
+		ui.app.SetFocus(ui.menu)
+	})
 }
 
 func (ui *UI) updateLogo(width int) {

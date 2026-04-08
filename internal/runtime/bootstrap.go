@@ -8,7 +8,7 @@ import (
 )
 
 func RunBootstrap() (string, error) {
-	script, err := resolveBootstrapScript()
+	script, err := BootstrapScriptPath()
 	if err != nil {
 		return "", err
 	}
@@ -25,18 +25,18 @@ func RunBootstrap() (string, error) {
 	return string(output), nil
 }
 
+func BootstrapScriptPath() (string, error) {
+	if path, ok := findBootstrapScript(); ok {
+		return path, nil
+	}
+	return "", fmt.Errorf("bootstrap script not found (expected scripts/bootstrap_python.sh)")
+}
+
 func resolveShell() (string, error) {
 	if shell, err := exec.LookPath("bash"); err == nil {
 		return shell, nil
 	}
 	return "", fmt.Errorf("bash not found; scripts/bootstrap_python.sh requires bash")
-}
-
-func resolveBootstrapScript() (string, error) {
-	if path, ok := findBootstrapScript(); ok {
-		return path, nil
-	}
-	return "", fmt.Errorf("bootstrap script not found (expected scripts/bootstrap_python.sh)")
 }
 
 func findBootstrapScript() (string, bool) {

@@ -37,7 +37,7 @@
 - Existing history mixes short `fix` commits and scoped Conventional Commit messages; prefer `type(scope): imperative summary` (example: `feat(tui): add focus symbol resync`).
 - Keep commits small and single-purpose; avoid vague messages like `update`.
 - `HARD SOP`: `code review before commit` is mandatory in every task. Never run any `git commit` before an explicit review step is completed and explicitly acknowledged in the thread.
-- If a commit was made before review by mistake: immediately stop, undo the commit while preserving changes in working tree, document a postmortem in `model_action_plan.md`, and resume from review stage.
+- If a commit was made before review by mistake: immediately stop, undo the commit while preserving changes in working tree, document a postmortem in `docs/maintainers/worklog.md`, and resume from review stage.
 - PRs should include: purpose, key files changed, test evidence (commands run), config/runtime impact, and terminal screenshots/snippets for visible TUI updates.
 - Link related issues/tasks when available.
 
@@ -52,14 +52,16 @@
 - For multi-URL metadata fetchers, enforce one cumulative timeout budget per source batch and treat missing required payload fields (for example nested `data`) as hard errors.
 
 ## Agent Workflow Requirements
-- For edits larger than 3 lines, follow: `plan (model_action_plan.md) -> approval -> code -> test -> review -> commit`.
+- For edits larger than 3 lines, follow: `plan (docs/maintainers/worklog.md) -> approval -> code -> test -> review -> commit`.
 - `HARD GATE`: no code edits before an explicit in-thread plan and explicit user approval for that plan.
 - At the start of each new session (or after compact), re-read `AGENTS.md` before continuing.
+- Do not use root-level progress-tracking files for new planning; public roadmap/release docs belong under `docs/`, and maintainer execution tracking belongs in `docs/maintainers/worklog.md`.
 - If requirements are ambiguous, stop and confirm assumptions before implementing.
 - For unspecified cases, default to the same cautious workflow: plan first, confirm when needed, then implement.
 - After any mistake (wrong assumption, missed requirement, failed execution due preventable causes, or rework caused by agent error), run a short postmortem in the same task:
-  - record `what happened`, `root cause`, `fix`, and `prevention rule` in `model_action_plan.md`;
+  - record `what happened`, `root cause`, `fix`, and `prevention rule` in `docs/maintainers/worklog.md`;
   - if the prevention can be generalized, add/update a rule in `AGENTS.md` immediately in the same change set.
+- When updating `docs/maintainers/worklog.md`, keep one clearly delimited active task block and ensure any `Postmortem` stays attached to that same task block.
 - When adding or changing contract-string fallback parsers, include delimiter-boundary test cases (e.g., `-C-`/`-P-`) and validate extracted tokens do not retain separators.
 - After editing an embedded Python worker (`internal/live/*.py`), run an import-time sanity check (e.g., `python3 internal/live/<worker>.py --help`) in addition to syntax checks, to catch top-level initialization/runtime ordering errors that `py_compile` will not catch.
 - In every task, proactively assess whether project-structure optimization would reduce future friction; if yes, provide a refactor proposal and an action plan before ending the task.

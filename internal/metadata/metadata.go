@@ -449,6 +449,10 @@ func findSourcesFile() (string, error) {
 	return "", fmt.Errorf("metadata sources config not found (config/metadata.sources.json)")
 }
 
+func SourcesFilePath() (string, error) {
+	return findSourcesFile()
+}
+
 func cacheDirs() ([]string, error) {
 	var dirs []string
 	if base, err := os.UserConfigDir(); err == nil && base != "" {

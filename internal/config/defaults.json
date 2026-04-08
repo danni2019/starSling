@@ -6,8 +6,8 @@
   "live-md": {
     "api": "ctp",
     "protocol": "tcp",
-    "host": "180.166.37.178",
-    "port": 41215,
+    "host": "",
+    "port": 0,
     "username": "",
     "pwd": "",
     "instruments": []

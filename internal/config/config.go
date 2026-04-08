@@ -106,21 +106,26 @@ func (c Config) Validate() error {
 	if c.Runtime.IdleLogIntervalSeconds <= 0 {
 		return fmt.Errorf("runtime.idle_log_interval_seconds must be > 0")
 	}
-	if c.LiveMD.Port <= 0 || c.LiveMD.Port > 65535 {
-		return fmt.Errorf("live-md.port must be between 1 and 65535")
+	if c.LiveMD.Port < 0 || c.LiveMD.Port > 65535 {
+		return fmt.Errorf("live-md.port must be 0 (unset) or between 1 and 65535")
 	}
 	return nil
 }
 
 func (c Config) LiveMDConfigured() bool {
-	return c.LiveMD.Host != "" && c.LiveMD.Port != 0
+	host := strings.TrimSpace(c.LiveMD.Host)
+	return host != "" && c.LiveMD.Port > 0 && c.LiveMD.Port <= 65535
 }
 
 func (c Config) ValidateLiveMD() error {
-	if c.LiveMD.Host == "" {
-		return fmt.Errorf("live-md.host is required")
+	host := strings.TrimSpace(c.LiveMD.Host)
+	if host == "" {
+		return fmt.Errorf("live-md.host must be configured before starting live market data")
 	}
 	if c.LiveMD.Port <= 0 || c.LiveMD.Port > 65535 {
+		if c.LiveMD.Port == 0 {
+			return fmt.Errorf("live-md.port must be configured before starting live market data")
+		}
 		return fmt.Errorf("live-md.port must be between 1 and 65535")
 	}
 	if c.LiveMD.Protocol == "" {

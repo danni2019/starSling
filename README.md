@@ -19,6 +19,12 @@
 - `Settings` 全局参数配置与本地持久化（含实时生效链路）
 - Live 面板稳定性修复（异步启动、焦点/渲染去抖、终端日志污染修复）
 
+## 项目文档
+
+- 公开路线图：`docs/project/roadmap.md`
+- 公开化 / prerelease 门禁：`docs/release/public-readiness.md`
+- `macOS` prerelease 验证流程：`docs/release/macos-prerelease.md`
+
 ## MVP 功能概览
 
 ### 1. 实时总览与市场面板（左上）
@@ -124,6 +130,27 @@ go run ./cmd/starsling
 - `PIP_EXTRA_INDEX_URL=...`
 - `STARSLING_PYTHON_VERSION=3.11.x`
 
+### 发布前 / 环境自检
+
+```bash
+go run ./cmd/starsling doctor
+```
+
+该命令会检查：
+
+- 当前平台是否在 runtime 支持范围内
+- `scripts/bootstrap_python.sh` 与 `config/metadata.sources.json` 是否可定位
+- 默认 `live-md.host` / `live-md.port` 是否仍为未配置状态
+- 配置目录与 metadata 目录解析是否正常
+
+如果只看到 `bundled python` 警告，说明还没执行 bootstrap；这不会阻止 prerelease 检查通过，但会阻止后续直接进入 `Live market data`。
+
+### 首次进入 Live 前需要先配置 Host / Port
+
+- 仓库内置的 `live-md.host` 默认值为空，`live-md.port` 默认值为 `0`，发布包中不预设任何 front 地址。
+- 进入应用后，请先在 `Config` 页面配置实际可用的 `Host` 和 `Port`。
+- 未完成这两个字段配置时，UI 会阻止进入 `Live market data`。
+
 ## 运行与交互
 
 主菜单：
@@ -180,6 +207,18 @@ go test ./...
 ```bash
 STARSLING_INTERNAL_DEBUG_UI=1 go run ./cmd/starsling
 ```
+
+## 发布说明
+
+- 当前发布规划优先为 `macOS` prerelease。
+- 该 prerelease 的目标是先稳定分发主程序与运行时引导材料，不承诺所有外部行情依赖都能一键安装完成。
+- 发布包会明确要求用户自行准备可用的 OpenCTP 环境或兼容安装来源。
+
+## License
+
+- 本项目代码采用 `BSD-3-Clause` 协议发布，详见 `LICENSE`。
+- 第三方依赖、行情接入组件及数据服务仍分别受其各自许可证或服务条款约束。
+- 将本项目用于生产、交易或商用场景前，请先自行确认相关依赖、数据源和接入环境的授权边界。
 
 ## 当前边界（MVP）
 
