@@ -4,8 +4,8 @@
 
 当前目标：
 
-- 仓库公开前，完成一次可审计的公开化收口。
-- 首个发布以 `macOS` prerelease 为主，不承诺跨平台 GA。
+- 仓库已公开，继续保持公开仓库基线与社区文件完整。
+- 首个正式发布仍以 `macOS` prerelease 为主，不承诺跨平台 GA。
 
 ## Completed Foundation
 
@@ -23,7 +23,11 @@
 
 - [x] 已完成一轮公开前 history / tracked-files 审计。
 - [ ] 明确 git 历史里的旧 front 地址是否需要清理，还是接受其作为非敏感历史信息保留。
-- [ ] 复核公开仓库默认分支保护、security 和 community 设置。
+- [x] GitHub repo 已切换为 `public`。
+- [x] rulesets 已生效。
+- [x] `Dependency graph` 与 `Dependabot alerts` 已启用。
+- [x] `Secret protection / push protection` 已启用。
+- [ ] 将本地社区文件与模板推送到默认分支后，再次复核 community profile 显示结果。
 
 审计结论（2026-04-08）：
 
@@ -44,11 +48,11 @@
 - [x] 已增加 `starsling doctor` 自检入口，覆盖平台、bootstrap、metadata sources、默认配置与目录解析等基础发布检查。
 - [ ] 将 `doctor` 接入本地 / CI 发布验证例程。
 
-### 3. Release And Visibility Flip
+### 3. Release Publication
 
 - [ ] 选定首个 prerelease tag（例如 `v0.1.0-alpha.1`）。
 - [ ] 准备正式 release notes 与已知限制说明。
-- [ ] 只有在前两类门禁完成后，才将仓库切换为 `public`。
+- [ ] 在前两类门禁完成后发布首个正式 prerelease。
 
 ## Release Artifact Contract
 
@@ -75,4 +79,4 @@
 - 当前发布目标是“让新用户能按文档跑起来”，不是“所有依赖一键打包完成”。
 - `OpenCTP` 相关环境、wheel 和服务接入仍可能需要用户自行准备。
 - 公开发布前，应始终把 operator-specific 配置、私有索引和真实凭证排除在仓库之外。
-- 仓库切换为 `public` 后，请立刻回到 GitHub `Security` / `Rules` / `Insights` 页面，复核 `Secret scanning`、rulesets 与 community profile 状态。
+- 仓库已经切换为 `public`；每次推送社区文件或仓库设置变更后，都应回到 GitHub `Security` / `Rules` / `Insights` 页面复核状态。

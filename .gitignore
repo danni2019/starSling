@@ -9,4 +9,5 @@ __pycache__/
 *.test
 *.out
 .DS_Store
+# Runtime cache captures; keep local but never version them.
 *.con

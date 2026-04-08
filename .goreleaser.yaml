@@ -1,0 +1,58 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: starsling
+
+before:
+  hooks:
+    - go test ./...
+
+builds:
+  - id: starsling-macos
+    main: ./cmd/starsling
+    binary: starsling
+    goos:
+      - darwin
+    goarch:
+      - arm64
+      - amd64
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+
+archives:
+  - id: starsling-macos-archive
+    ids:
+      - starsling-macos
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    wrap_in_directory: true
+    files:
+      - LICENSE
+      - README.md
+      - CONTRIBUTING.md
+      - SECURITY.md
+      - config/starsling.example.json
+      - config/metadata.sources.json
+      - python/README.md
+      - python/requirements.txt
+      - scripts/bootstrap_python.sh
+
+checksum:
+  name_template: checksums.txt
+
+release:
+  draft: true
+  prerelease: auto
+  make_latest: false
+  header: |
+    ## macOS prerelease
+
+    This prerelease currently targets macOS and ships the main executable plus runtime bootstrap materials.
+
+    Before using `Live market data`, configure a real `Host` and `Port` in the in-app `Config` screen.
+
+    External OpenCTP-compatible dependencies may still require user-managed installation.
+
+changelog:
+  disable: true

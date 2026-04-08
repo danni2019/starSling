@@ -12,34 +12,39 @@
 
 ### Name
 
-Remove default front preset and finish local public-readiness gates
+Finalize public-facing docs: README, roadmap, and legacy tracking-file cleanup
 
 ### Request Summary
 
-将发布包中的 `front` 默认值改为完全由用户自行配置，并继续推进所有本地侧的公开前门禁，直到仓库达到 ready-for-public 状态。
+按当前项目设计与公开仓库状态，重写 README、更新 roadmap，并完成旧根目录追踪文件迁移后的文档收尾。
 
 ### Plan
 
-1. 将默认配置与样例配置中的 `live-md.host` 改为空字符串，`live-md.port` 保持未配置态，并同步调整 `doctor` 与相关测试。
-2. 更新 README / prerelease 文档，使“用户必须自行配置 Host/Port”与新的空默认值一致。
-3. 继续完成本地公开前门禁中仍可在本地收口的项：
-   - 复查当前工作树和发布文档一致性；
-   - 确认 `doctor`、`goreleaser` dry-run、归档契约仍全部通过；
-   - 将已完成门禁写回 `docs/release/public-readiness.md`。
-4. 对 GitHub public 切换后才可见/才需要复核的项保留明确提醒，不在 private 状态下假设完成。
-5. 运行 `go test ./...` 和 `go run ./cmd/starsling doctor` 收尾验证。
+1. 重写 `README.md`，使其与当前公开仓库定位、当前 UI 设计、发布状态和运行方式一致。
+2. 将 `docs/misc/` 下的两张项目截图嵌入 `README.md`。
+3. 更新 `docs/project/roadmap.md`，按当前项目结构与公开阶段目标重写路线图。
+4. 保持 `docs/maintainers/worklog.md`、`docs/project/roadmap.md`、`docs/release/public-readiness.md` 为新文档入口，并确认旧根目录追踪文件继续作为删除项保留。
+5. 做文档级验证：
+   - 检查旧追踪文件引用是否还残留；
+   - 检查 README 图片路径和 docs 链接是否正确。
 
 ### Approval
 
-Approved by user in-thread on 2026-04-08 ("确认front相关实现").
+Approved by user in-thread on 2026-04-08 ("确认").
 
 ### Validation
 
+- `rg -n "model_action_plan\\.md|Roadmap\\.md|plan\\.md" .` returned no matches.
+- Verified `README.md` references:
+  - `docs/misc/screenshot_starSling.png`
+  - `docs/misc/screenshot_main_panel.png`
+  - `docs/project/roadmap.md`
+  - `docs/release/public-readiness.md`
+  - `docs/release/macos-prerelease.md`
+- Rewrote `README.md` for the current public-repo state and current default UI layout.
+- Updated `docs/project/roadmap.md` to reflect the public-stage roadmap.
+- Updated `docs/release/public-readiness.md` to reflect that the repository is already public.
 - `go test ./...` passed.
-- `go run ./cmd/starsling doctor` returned `7 ok, 0 warn, 0 fail`.
-- `goreleaser check` passed.
-- `goreleaser release --snapshot --clean` passed.
-- Extracted `dist/starsling_0.0.0-SNAPSHOT-a0071aa_darwin_arm64.tar.gz` and ran `./starsling doctor`; result was `6 ok, 1 warn, 0 fail` with only the expected bundled-python warning.
 
 ### Postmortem
 
