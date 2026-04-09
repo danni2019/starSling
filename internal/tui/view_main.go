@@ -99,6 +99,10 @@ func (ui *UI) openLiveScreenFromMain() {
 		ui.promptLiveConfigRequired(fmt.Sprintf("Config %q is not ready for Live Market Data.\n\nConfigure Host and Port in Config before continuing.\n\nDetails: %s", configName, err.Error()))
 		return
 	}
+	if err := ensureLiveMetadataReadyFn(ui); err != nil {
+		ui.promptLiveMetadataRequired(fmt.Sprintf("Contract metadata is required before entering Live Market Data.\n\nstarSling attempted to refresh metadata but it is still unavailable.\n\nCheck network access to dict.openctp.cn, then retry.\n\nDetails: %s", err.Error()))
+		return
+	}
 	ui.setScreen(screenLive)
 }
 
@@ -119,6 +123,16 @@ func (ui *UI) promptLiveConfigRequired(message string) {
 				ui.setConfigStatus("Configure Host and Port before starting Live Market Data.")
 			}
 			ui.setScreen(screenConfig)
+			return
+		}
+		ui.app.SetFocus(ui.menu)
+	})
+}
+
+func (ui *UI) promptLiveMetadataRequired(message string) {
+	ui.showModal("live-metadata-required", message, []string{"Retry", "Cancel"}, func(index int, _ string) {
+		if index == 0 {
+			ui.openLiveScreenFromMain()
 			return
 		}
 		ui.app.SetFocus(ui.menu)

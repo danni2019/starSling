@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -72,6 +73,9 @@ func TestOpenLiveScreenFromMainAllowsConfiguredConfig(t *testing.T) {
 	origBundledPythonPathFn := bundledPythonPathFn
 	bundledPythonPathFn = func() string { return "/tmp/starsling-test-python" }
 	defer func() { bundledPythonPathFn = origBundledPythonPathFn }()
+	origEnsureLiveMetadataReadyFn := ensureLiveMetadataReadyFn
+	ensureLiveMetadataReadyFn = func(ui *UI) error { return nil }
+	defer func() { ensureLiveMetadataReadyFn = origEnsureLiveMetadataReadyFn }()
 
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
@@ -102,6 +106,43 @@ func TestOpenLiveScreenFromMainAllowsConfiguredConfig(t *testing.T) {
 	}
 }
 
+func TestOpenLiveScreenFromMainBlocksWhenMetadataUnavailable(t *testing.T) {
+	origBundledPythonPathFn := bundledPythonPathFn
+	bundledPythonPathFn = func() string { return "/tmp/starsling-test-python" }
+	defer func() { bundledPythonPathFn = origBundledPythonPathFn }()
+	origEnsureLiveMetadataReadyFn := ensureLiveMetadataReadyFn
+	ensureLiveMetadataReadyFn = func(ui *UI) error { return errors.New("contract metadata unavailable") }
+	defer func() { ensureLiveMetadataReadyFn = origEnsureLiveMetadataReadyFn }()
+
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tempHome, ".config"))
+
+	ui := testMainMenuUI()
+
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatalf("default config: %v", err)
+	}
+	cfg.LiveMD.Host = "127.0.0.1"
+	cfg.LiveMD.Port = 4123
+	if err := configstore.Save(configstore.DefaultName(), cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	if err := configstore.SetDefault(configstore.DefaultName()); err != nil {
+		t.Fatalf("set default config: %v", err)
+	}
+
+	ui.openLiveScreenFromMain()
+
+	if ui.currentScreen() != screenMain {
+		t.Fatalf("expected to remain on main screen, got %s", ui.currentScreen())
+	}
+	if !ui.pages.HasPage("live-metadata-required") {
+		t.Fatalf("expected live-metadata-required modal to be shown")
+	}
+}
+
 func TestFinishBootstrapResumesLiveFlow(t *testing.T) {
 	origBundledPythonPathFn := bundledPythonPathFn
 	runtimeReady := false
@@ -112,6 +153,9 @@ func TestFinishBootstrapResumesLiveFlow(t *testing.T) {
 		return ""
 	}
 	defer func() { bundledPythonPathFn = origBundledPythonPathFn }()
+	origEnsureLiveMetadataReadyFn := ensureLiveMetadataReadyFn
+	ensureLiveMetadataReadyFn = func(ui *UI) error { return nil }
+	defer func() { ensureLiveMetadataReadyFn = origEnsureLiveMetadataReadyFn }()
 
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)

@@ -87,8 +87,9 @@ Live 多面板界面：
 ```
 
 3. 如果本地 runtime 尚未初始化，应用会提示进入 `Setup Python runtime`
-4. 完成 bootstrap 后，再在 `Config` 页面填写真实 `Host` / `Port`
-5. 然后进入 `Live market data`
+4. 首次进入 `Live market data` 时，如本地 metadata 缺失或过期，应用会先尝试刷新 contract / trade_time metadata
+5. 完成 bootstrap 后，再在 `Config` 页面填写真实 `Host` / `Port`
+6. 然后进入 `Live market data`
 
 ### 从源码本地运行
 
@@ -143,6 +144,7 @@ go run ./cmd/starsling doctor
 - 发布包与仓库默认配置中，`live-md.host` 为空，`live-md.port` 为 `0`
 - 不预设任何 front 地址
 - 如果 bundled runtime 尚未准备好，主界面和 `Live market data` 入口都会引导进入 `Setup Python runtime`
+- 首次进入 `Live market data` 时，如本地 metadata 缺失或过期，应用会主动尝试刷新 metadata；当前公开源地址为 `dict.openctp.cn`
 - 进入应用后，请先在 `Config` 页面填写真实可用的 `Host` 与 `Port`
 - 未完成配置前，UI 不允许进入 `Live market data`
 

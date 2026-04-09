@@ -65,7 +65,7 @@ case "${platform}" in
  esac
 
 if [[ ! -x "${PYTHON_DIR}/bin/python3" ]]; then
-  echo "Downloading Python ${PYTHON_VERSION} for ${platform}..."
+  echo "Press Enter to start downloading Python ${PYTHON_VERSION} for ${platform}..."
   tmpfile=$(mktemp)
   curl -fsSL "${python_url}" -o "${tmpfile}"
   tar -xzf "${tmpfile}" -C "${PYTHON_DIR}" --strip-components=1
