@@ -19,7 +19,7 @@
 
 ### 1. Public Prerelease Hardening
 
-- 完成首个正式 `macOS prerelease` tag 与 release notes
+- 稳定 `macOS` 与 `linux-x86_64` prerelease 资产、tag 与 release notes
 - 将 `doctor` 接入更稳定的本地 / CI 验证例程
 - 在干净环境中完成 runtime bootstrap 的端到端复核
 - 持续保持公开仓库文档、community profile 与发布资产契约一致

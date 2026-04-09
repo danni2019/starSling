@@ -12,35 +12,37 @@
 
 ### Name
 
-Guide first-run runtime bootstrap from inside the app
+Extend prerelease publishing to linux-x86_64
 
 ### Request Summary
 
-在确认 macOS 无法提供 `openctp` 自包含 release 之后，将首次初始化路径收敛为“用户下载压缩包并先运行 `./starsling`，由应用内引导完成 Python runtime bootstrap”，而不是要求用户先阅读文档再手动执行脚本。
+在现有 macOS prerelease 已跑通的基础上，扩展 GitHub release 产物到 `linux-x86_64`，并同步更新发布配置、公开文档和验证路径。
 
 ### Plan
 
-1. 为主界面增加 runtime 缺失引导，并在 `Live market data` 入口优先检查 bundled runtime。
-2. 复用现有 `Setup Python runtime` 页面，支持引导式自动运行 bootstrap。
-3. 在 bootstrap 成功后按来源恢复流程：
-   - 若来自 `Live` 入口，则自动重试进入 Live；
-   - 若仅是首次启动提醒，则停留在 setup/main 流程中。
-4. 更新 README / release 文档，把用户路径改成“下载 -> 解压 -> 运行 `./starsling` -> 按应用内引导完成初始化”。
-5. 补充 `internal/tui` 测试并运行 `go test ./internal/tui`、`go test ./...`。
+1. 更新 `.goreleaser.yaml`，增加 `linux/amd64` 构建与归档资产。
+2. 新增 `docs/release/linux-prerelease.md`，明确 Linux prerelease 的验证范围和限制。
+3. 更新 `README.md`、`docs/release/public-readiness.md`、`docs/project/roadmap.md` 中仍然偏 macOS-only 的发布表述。
+4. 在本地运行 `goreleaser check` 与 `goreleaser release --snapshot --clean`，核对 Linux 归档名称与内容。
+5. 运行 `go test ./...`，并把验证结果回写到本文件。
 
 ### Approval
 
-Approved by user in-thread on 2026-04-08 ("ok").
+Approved by user in-thread on 2026-04-09 ("可以，继续linux prerelease").
 
 ### Validation
 
-- `gofmt -w internal/tui/app.go internal/tui/bootstrap_flow.go internal/tui/view_main.go internal/tui/view_setup.go internal/tui/view_main_test.go` passed.
-- `go test ./internal/tui` passed.
+- `goreleaser check` passed.
 - `go test ./...` passed.
+- `goreleaser release --snapshot --clean` passed when rerun outside the sandbox.
+- Verified Linux snapshot archive:
+  - `dist/starsling_0.1.0-alpha.1-SNAPSHOT-ce19ebc_linux_amd64.tar.gz`
+  - includes `starsling`, `LICENSE`, `README.md`, `CONTRIBUTING.md`, `SECURITY.md`, config files, Python metadata, and `scripts/bootstrap_python.sh`
 - Updated user-facing docs:
   - `README.md`
+  - `docs/project/roadmap.md`
   - `docs/release/public-readiness.md`
-  - `docs/release/macos-prerelease.md`
+  - `docs/release/linux-prerelease.md`
 
 ### Postmortem
 

@@ -20,11 +20,23 @@ builds:
       - CGO_ENABLED=0
     ldflags:
       - -s -w
+  - id: starsling-linux
+    main: ./cmd/starsling
+    binary: starsling
+    goos:
+      - linux
+    goarch:
+      - amd64
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w
 
 archives:
-  - id: starsling-macos-archive
+  - id: starsling-archive
     ids:
       - starsling-macos
+      - starsling-linux
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     wrap_in_directory: true
     files:
@@ -46,9 +58,9 @@ release:
   prerelease: auto
   make_latest: false
   header: |
-    ## macOS prerelease
+    ## macOS and Linux prerelease
 
-    This prerelease currently targets macOS and ships the main executable plus runtime bootstrap materials.
+    This prerelease currently targets macOS and linux-x86_64, and ships the main executable plus runtime bootstrap materials.
 
     Before using `Live market data`, configure a real `Host` and `Port` in the in-app `Config` screen.
 

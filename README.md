@@ -66,13 +66,14 @@ Live 多面板界面：
 - `scripts/bootstrap_python.sh` 仍可作为手动 fallback
 - `go run ./cmd/starsling doctor` 可执行发布/环境自检
 - metadata 源配置、缓存目录与默认配置路径都已文档化
-- `macOS` prerelease 已具备本地 `goreleaser` dry-run 验证路径
+- `macOS` 与 `linux-x86_64` prerelease 已具备本地 `goreleaser` dry-run 验证路径
 
 ## 项目文档
 
 - 公开路线图：[docs/project/roadmap.md](docs/project/roadmap.md)
 - 公开仓库 / prerelease 门禁：[docs/release/public-readiness.md](docs/release/public-readiness.md)
 - `macOS` prerelease 验证流程：[docs/release/macos-prerelease.md](docs/release/macos-prerelease.md)
+- `linux-x86_64` prerelease 验证流程：[docs/release/linux-prerelease.md](docs/release/linux-prerelease.md)
 
 ## 快速开始
 
@@ -168,7 +169,7 @@ STARSLING_INTERNAL_DEBUG_UI=1 go run ./cmd/starsling
 ## 当前发布状态
 
 - 仓库已公开
-- 当前发布目标优先为 `macOS prerelease`
+- 当前下一版发布目标为 `macOS` 与 `linux-x86_64` prerelease
 - 当前用户路径已经收敛为：`下载 -> 解压 -> 运行 ./starsling -> 按应用内引导完成首次初始化`
 - 本地已通过：
   - `goreleaser check`
