@@ -12,28 +12,28 @@
 
 ### Name
 
-Ensure metadata readiness before Live startup
+Improve bootstrap progress visibility on Linux
 
 ### Request Summary
 
-修复 Linux release 场景下进入 `Live market data` 前未把 contract metadata 作为显式门禁的问题。目标是：进入 Live 前确保 metadata 已可用；如果本地缺失或过期则主动刷新；刷新失败时阻止进入空白 Live 并给出明确提示。
+修复 Linux 上 `Setup Python runtime` 首次运行时“看起来像没反应”的体验问题。根因是 bootstrap 脚本文案误导且下载阶段基本静默；目标是让长耗时步骤持续输出真实进度，确保用户能看到 runtime 正在配置。
 
 ### Plan
 
-1. 在 `internal/tui` 增加 `Live` 入口的 metadata readiness 检查：先尝试按 stale/missing 规则刷新 metadata，再在必要时强制 refresh，并在成功后重载 contract mappings 与 trade_time segments。
-2. 当 metadata 仍不可用时，阻止进入 `Live market data`，改为弹出明确错误提示，而不是进入空白 Live 界面。
-3. 为 metadata 门禁与刷新兜底补充测试。
-4. 同步更新 release/README 文档，写明首次进入 Live 可能需要联网刷新 metadata。
-5. 运行 `go test ./internal/tui ./internal/metadata` 与 `go test ./...`。
+1. 调整 `scripts/bootstrap_python.sh` 的长耗时步骤输出：把误导性的 `Press Enter...` 改成真实状态日志，并让 Python 下载阶段显示持续进度。
+2. 在 `internal/tui/view_setup.go` 里规范化 `\r` 进度输出，确保 `curl` 进度条在 `Output` 面板里可见，而不是看起来空白。
+3. 为 Setup 输出规范化补充测试。
+4. 运行 `go test ./internal/runtime ./internal/tui` 与 `go test ./...`。
 
 ### Approval
 
-Approved by user in-thread on 2026-04-09 ("确认，改完之后同步将发布命令也写给我").
+Approved by user in-thread on 2026-04-09 ("确认。改好后给我发布命令").
 
 ### Validation
 
-- `gofmt -w internal/tui/metadata_gate.go internal/tui/metadata_gate_test.go internal/tui/view_main.go internal/tui/view_main_test.go` passed.
-- `go test ./internal/tui ./internal/metadata` passed.
+- `gofmt -w internal/tui/app.go internal/tui/view_setup.go internal/tui/view_setup_test.go` passed.
+- `bash -n scripts/bootstrap_python.sh` passed.
+- `go test ./internal/runtime ./internal/tui` passed.
 - `go test ./...` passed.
 
 ### Postmortem

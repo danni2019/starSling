@@ -65,14 +65,20 @@ case "${platform}" in
  esac
 
 if [[ ! -x "${PYTHON_DIR}/bin/python3" ]]; then
-  echo "Press Enter to start downloading Python ${PYTHON_VERSION} for ${platform}..."
+  echo "Downloading Python ${PYTHON_VERSION} for ${platform}..."
   tmpfile=$(mktemp)
-  curl -fsSL "${python_url}" -o "${tmpfile}"
+  curl --fail --location --progress-bar "${python_url}" -o "${tmpfile}"
+  echo
+  echo "Extracting Python runtime..."
   tar -xzf "${tmpfile}" -C "${PYTHON_DIR}" --strip-components=1
   rm -f "${tmpfile}"
+else
+  echo "Bundled Python already present for ${platform}."
 fi
 
+echo "Creating virtual environment..."
 "${PYTHON_DIR}/bin/python3" -m venv "${VENV_DIR}"
+echo "Upgrading pip..."
 "${VENV_DIR}/bin/pip" install --upgrade pip
 
 PIP_ARGS=()
@@ -84,14 +90,18 @@ if [[ "${PIP_EXTRA_INDEX_URL:-}" != "" ]]; then
 fi
 
 if [[ "${OPENCTP_WHEEL:-}" != "" ]]; then
+  echo "Installing OpenCTP wheel from OPENCTP_WHEEL..."
   if [[ ${#PIP_ARGS[@]} -gt 0 ]]; then
     "${VENV_DIR}/bin/pip" install "${OPENCTP_WHEEL}" "${PIP_ARGS[@]}"
+    echo "Installing Python requirements..."
     "${VENV_DIR}/bin/pip" install -r "${REQ_FILE}" "${PIP_ARGS[@]}"
   else
     "${VENV_DIR}/bin/pip" install "${OPENCTP_WHEEL}"
+    echo "Installing Python requirements..."
     "${VENV_DIR}/bin/pip" install -r "${REQ_FILE}"
   fi
 else
+  echo "Installing Python requirements..."
   if [[ ${#PIP_ARGS[@]} -gt 0 ]]; then
     "${VENV_DIR}/bin/pip" install -r "${REQ_FILE}" "${PIP_ARGS[@]}"
   else

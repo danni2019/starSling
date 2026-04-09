@@ -104,7 +104,7 @@ func (ui *UI) appendSetupOutputChunk(chunk string) {
 		return
 	}
 	ui.setupOutputMu.Lock()
-	ui.setupOutputText += chunk
+	ui.setupOutputText += normalizeSetupOutputChunk(chunk, &ui.setupOutputCR)
 	text := ui.setupOutputText
 	ui.setupOutputMu.Unlock()
 	ui.renderSetupOutput(text)
@@ -115,7 +115,8 @@ func (ui *UI) setSetupOutputText(text string) {
 		return
 	}
 	ui.setupOutputMu.Lock()
-	ui.setupOutputText = text
+	ui.setupOutputCR = false
+	ui.setupOutputText = normalizeSetupOutputText(text)
 	current := ui.setupOutputText
 	ui.setupOutputMu.Unlock()
 	ui.renderSetupOutput(current)
@@ -127,4 +128,38 @@ func (ui *UI) renderSetupOutput(text string) {
 	}
 	ui.setupOutput.SetText(text)
 	ui.setupOutput.ScrollToEnd()
+}
+
+func normalizeSetupOutputText(text string) string {
+	pendingCR := false
+	return normalizeSetupOutputChunk(text, &pendingCR)
+}
+
+func normalizeSetupOutputChunk(chunk string, pendingCR *bool) string {
+	if chunk == "" {
+		return ""
+	}
+	var out []rune
+	for _, r := range chunk {
+		if pendingCR != nil && *pendingCR {
+			if r == '\n' {
+				out = append(out, '\n')
+				*pendingCR = false
+				continue
+			}
+			out = append(out, '\n')
+			*pendingCR = false
+		}
+
+		if r == '\r' {
+			if pendingCR != nil {
+				*pendingCR = true
+			} else {
+				out = append(out, '\n')
+			}
+			continue
+		}
+		out = append(out, r)
+	}
+	return string(out)
 }
