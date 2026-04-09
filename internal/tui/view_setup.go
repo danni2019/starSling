@@ -1,10 +1,6 @@
 package tui
 
-import (
-	"strings"
-
-	"github.com/rivo/tview"
-)
+import "github.com/rivo/tview"
 
 func (ui *UI) buildSetupScreen() tview.Primitive {
 	ui.setupStatus = tview.NewTextView()
@@ -74,10 +70,14 @@ func (ui *UI) startBootstrap() {
 	}
 	ui.setupRunning = true
 	ui.setupStatus.SetText("Running bootstrap...")
-	ui.setupOutput.SetText("")
+	ui.setSetupOutputText("")
 
 	go func() {
-		output, err := runBootstrapFn()
+		output, err := runBootstrapStreamFn(func(chunk string) {
+			ui.app.QueueUpdateDraw(func() {
+				ui.appendSetupOutputChunk(chunk)
+			})
+		})
 		ui.app.QueueUpdateDraw(func() {
 			ui.finishBootstrap(output, err)
 		})
@@ -91,10 +91,40 @@ func (ui *UI) finishBootstrap(output string, err error) {
 	} else {
 		ui.setupStatus.SetText("Completed.")
 	}
-	ui.setupOutput.SetText(strings.TrimSpace(output))
+	ui.setSetupOutputText(output)
 	if err != nil || !ui.setupResumeLive {
 		return
 	}
 	ui.setupResumeLive = false
 	ui.openLiveScreenFromMain()
+}
+
+func (ui *UI) appendSetupOutputChunk(chunk string) {
+	if ui == nil || chunk == "" {
+		return
+	}
+	ui.setupOutputMu.Lock()
+	ui.setupOutputText += chunk
+	text := ui.setupOutputText
+	ui.setupOutputMu.Unlock()
+	ui.renderSetupOutput(text)
+}
+
+func (ui *UI) setSetupOutputText(text string) {
+	if ui == nil {
+		return
+	}
+	ui.setupOutputMu.Lock()
+	ui.setupOutputText = text
+	current := ui.setupOutputText
+	ui.setupOutputMu.Unlock()
+	ui.renderSetupOutput(current)
+}
+
+func (ui *UI) renderSetupOutput(text string) {
+	if ui.setupOutput == nil {
+		return
+	}
+	ui.setupOutput.SetText(text)
+	ui.setupOutput.ScrollToEnd()
 }

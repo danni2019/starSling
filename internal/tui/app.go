@@ -105,6 +105,8 @@ type UI struct {
 	setupStatus     *tview.TextView
 	setupOutput     *tview.TextView
 	setupActions    *tview.List
+	setupOutputMu   sync.Mutex
+	setupOutputText string
 	setupRunning    bool
 	setupAutoStart  bool
 	setupResumeLive bool

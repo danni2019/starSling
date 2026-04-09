@@ -12,37 +12,28 @@
 
 ### Name
 
-Extend prerelease publishing to linux-x86_64
+Stream bootstrap output in Setup Python runtime
 
 ### Request Summary
 
-在现有 macOS prerelease 已跑通的基础上，扩展 GitHub release 产物到 `linux-x86_64`，并同步更新发布配置、公开文档和验证路径。
+修复 `Setup Python runtime` 页面在 bootstrap 运行期间 `Output` 区域无实时内容的问题，将当前“一次性收集后再显示”改成流式输出。
 
 ### Plan
 
-1. 更新 `.goreleaser.yaml`，增加 `linux/amd64` 构建与归档资产。
-2. 新增 `docs/release/linux-prerelease.md`，明确 Linux prerelease 的验证范围和限制。
-3. 更新 `README.md`、`docs/release/public-readiness.md`、`docs/project/roadmap.md` 中仍然偏 macOS-only 的发布表述。
-4. 在本地运行 `goreleaser check` 与 `goreleaser release --snapshot --clean`，核对 Linux 归档名称与内容。
-5. 运行 `go test ./...`，并把验证结果回写到本文件。
+1. 重构 `internal/runtime/bootstrap.go`，提供带流式回调的 bootstrap 执行路径，同时保留最终完整输出。
+2. 更新 `internal/tui/view_setup.go`，在 bootstrap 运行过程中实时追加输出到 `Output` 文本框。
+3. 为 runtime 输出收集和 Setup 页面流式更新补充测试。
+4. 运行 `go test ./internal/runtime ./internal/tui` 与 `go test ./...`。
 
 ### Approval
 
-Approved by user in-thread on 2026-04-09 ("可以，继续linux prerelease").
+Approved by user in-thread on 2026-04-09 ("对，生成实时输出。").
 
 ### Validation
 
-- `goreleaser check` passed.
+- `gofmt -w internal/runtime/bootstrap.go internal/runtime/bootstrap_test.go internal/tui/app.go internal/tui/bootstrap_flow.go internal/tui/view_setup.go internal/tui/view_setup_test.go` passed.
+- `go test ./internal/runtime ./internal/tui` passed.
 - `go test ./...` passed.
-- `goreleaser release --snapshot --clean` passed when rerun outside the sandbox.
-- Verified Linux snapshot archive:
-  - `dist/starsling_0.1.0-alpha.1-SNAPSHOT-ce19ebc_linux_amd64.tar.gz`
-  - includes `starsling`, `LICENSE`, `README.md`, `CONTRIBUTING.md`, `SECURITY.md`, config files, Python metadata, and `scripts/bootstrap_python.sh`
-- Updated user-facing docs:
-  - `README.md`
-  - `docs/project/roadmap.md`
-  - `docs/release/public-readiness.md`
-  - `docs/release/linux-prerelease.md`
 
 ### Postmortem
 

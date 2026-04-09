@@ -1,13 +1,19 @@
 package runtime
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 )
 
 func RunBootstrap() (string, error) {
+	return RunBootstrapStream(nil)
+}
+
+func RunBootstrapStream(onChunk func(string)) (string, error) {
 	script, err := BootstrapScriptPath()
 	if err != nil {
 		return "", err
@@ -18,11 +24,51 @@ func RunBootstrap() (string, error) {
 	}
 
 	cmd := exec.Command(shell, script)
-	output, err := cmd.CombinedOutput()
+	output, err := runStreamingCommand(cmd, onChunk)
 	if err != nil {
-		return string(output), fmt.Errorf("bootstrap failed: %w", err)
+		return output, fmt.Errorf("bootstrap failed: %w", err)
 	}
-	return string(output), nil
+	return output, nil
+}
+
+func runStreamingCommand(cmd *exec.Cmd, onChunk func(string)) (string, error) {
+	collector := newStreamingCollector(onChunk)
+	cmd.Stdout = collector
+	cmd.Stderr = collector
+	err := cmd.Run()
+	return collector.String(), err
+}
+
+type streamingCollector struct {
+	mu      sync.Mutex
+	buf     bytes.Buffer
+	onChunk func(string)
+}
+
+func newStreamingCollector(onChunk func(string)) *streamingCollector {
+	return &streamingCollector{onChunk: onChunk}
+}
+
+func (c *streamingCollector) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n, err := c.buf.Write(p)
+	if err != nil {
+		return n, err
+	}
+	if c.onChunk != nil && len(p) > 0 {
+		c.onChunk(string(p))
+	}
+	return n, nil
+}
+
+func (c *streamingCollector) String() string {
+	if c == nil {
+		return ""
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.String()
 }
 
 func BootstrapScriptPath() (string, error) {

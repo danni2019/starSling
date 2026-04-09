@@ -8,8 +8,8 @@ import (
 )
 
 var (
-	bundledPythonPathFn = live.BundledPythonPath
-	runBootstrapFn      = internalruntime.RunBootstrap
+	bundledPythonPathFn  = live.BundledPythonPath
+	runBootstrapStreamFn = internalruntime.RunBootstrapStream
 )
 
 func runtimeBootstrapNeeded() bool {
