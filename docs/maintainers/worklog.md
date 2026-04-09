@@ -12,28 +12,26 @@
 
 ### Name
 
-Improve bootstrap progress visibility on Linux
+Stabilize router log round-trip test in CI
 
 ### Request Summary
 
-修复 Linux 上 `Setup Python runtime` 首次运行时“看起来像没反应”的体验问题。根因是 bootstrap 脚本文案误导且下载阶段基本静默；目标是让长耗时步骤持续输出真实进度，确保用户能看到 runtime 正在配置。
+修复 GitHub Actions 上 `TestRouterMarketSnapshotRoundTrip` 的时序性失败。根因是测试假设 `Notify(log.append)` 返回后服务端已经完成处理，但实际通知和后续请求走的是不同连接，CI 上会出现 `get_view_snapshot` 先于 `log.append` 落入 state 的竞态。
 
 ### Plan
 
-1. 调整 `scripts/bootstrap_python.sh` 的长耗时步骤输出：把误导性的 `Press Enter...` 改成真实状态日志，并让 Python 下载阶段显示持续进度。
-2. 在 `internal/tui/view_setup.go` 里规范化 `\r` 进度输出，确保 `curl` 进度条在 `Output` 面板里可见，而不是看起来空白。
-3. 为 Setup 输出规范化补充测试。
-4. 运行 `go test ./internal/runtime ./internal/tui` 与 `go test ./...`。
+1. 调整 `internal/router/server_test.go`，把 `log.append` 后对 `get_view_snapshot` 中日志可见性的断言改成带超时的轮询，而不是单次立即断言。
+2. 仅修测试，不改变生产中的 router / IPC 语义。
+3. 运行 `go test ./internal/router -run TestRouterMarketSnapshotRoundTrip -count=50` 与 `go test ./...`。
 
 ### Approval
 
-Approved by user in-thread on 2026-04-09 ("确认。改好后给我发布命令").
+Approved by user in-thread on 2026-04-09 ("ok").
 
 ### Validation
 
-- `gofmt -w internal/tui/app.go internal/tui/view_setup.go internal/tui/view_setup_test.go` passed.
-- `bash -n scripts/bootstrap_python.sh` passed.
-- `go test ./internal/runtime ./internal/tui` passed.
+- `gofmt -w internal/router/server_test.go` passed.
+- `go test ./internal/router -run TestRouterMarketSnapshotRoundTrip -count=50` passed.
 - `go test ./...` passed.
 
 ### Postmortem

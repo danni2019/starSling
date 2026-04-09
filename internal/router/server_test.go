@@ -119,7 +119,8 @@ func TestRouterMarketSnapshotRoundTrip(t *testing.T) {
 		t.Fatalf("notify log.append: %v", err)
 	}
 	var withSections ViewSnapshot
-	if err := client.Call(context.Background(), "router.get_view_snapshot", GetViewSnapshotParams{}, &withSections); err != nil {
+	withSections, err = waitViewSnapshotWithLogs(client)
+	if err != nil {
 		t.Fatalf("get_view_snapshot full sections: %v", err)
 	}
 	if len(withSections.Curve.Rows) != 1 {
@@ -182,6 +183,24 @@ func waitViewSnapshot(client *ipc.Client) (ViewSnapshot, error) {
 		var view ViewSnapshot
 		err := client.Call(context.Background(), "router.get_view_snapshot", GetViewSnapshotParams{}, &view)
 		if err == nil && view.Market.Seq > 0 {
+			return view, nil
+		}
+		if time.Now().After(deadline) {
+			if err != nil {
+				return ViewSnapshot{}, err
+			}
+			return view, nil
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func waitViewSnapshotWithLogs(client *ipc.Client) (ViewSnapshot, error) {
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		var view ViewSnapshot
+		err := client.Call(context.Background(), "router.get_view_snapshot", GetViewSnapshotParams{}, &view)
+		if err == nil && len(view.Logs.Items) > 0 {
 			return view, nil
 		}
 		if time.Now().After(deadline) {
