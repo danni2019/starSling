@@ -72,8 +72,9 @@ Linux snapshot 归档应至少包含：
 1. 下载并解压 release 归档
 2. 运行 `./starsling`
 3. 若 bundled runtime 不存在，由应用内引导进入 `Setup Python runtime`
-4. 首次进入 `Live market data` 时，如本地 metadata 缺失或过期，应用会尝试刷新 contract / trade_time metadata
-5. 完成 bootstrap 后配置真实 `Host/Port`
+4. 应用启动时会先做一次 metadata 预热
+5. 每次进入 `Live market data` 前，如本地 metadata 缺失或过期，应用会引导进入独立的 `Refresh market metadata`
+6. 完成 bootstrap 后配置真实 `Host/Port`
 
 如果需要手动 fallback，也可以直接执行：
 
@@ -87,5 +88,5 @@ Linux snapshot 归档应至少包含：
 
 - 当前 prerelease 不承诺外部行情依赖全部一键安装完成。
 - 当前“首次初始化”仍需要通过应用内 Setup 调用 bootstrap。
-- 首次进入 `Live market data` 仍依赖访问 `dict.openctp.cn` 来刷新 metadata；若网络不可达，UI 会明确阻止进入空白 Live 界面。
+- metadata 预热与 `Live` 前刷新都依赖访问 `dict.openctp.cn`；若网络不可达，UI 会明确阻止进入空白 Live 界面。
 - 这份文档默认在非 Linux 主机上只验证归档和配置，不替代真实 Linux 环境的端到端 smoke test。

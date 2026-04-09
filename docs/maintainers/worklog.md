@@ -12,26 +12,28 @@
 
 ### Name
 
-Stabilize router log round-trip test in CI
+Gate Live entry on explicit metadata readiness flow
 
 ### Request Summary
 
-修复 GitHub Actions 上 `TestRouterMarketSnapshotRoundTrip` 的时序性失败。根因是测试假设 `Notify(log.append)` 返回后服务端已经完成处理，但实际通知和后续请求走的是不同连接，CI 上会出现 `get_view_snapshot` 先于 `log.append` 落入 state 的竞态。
+把 metadata 准备从 runtime setup 中彻底分离，并把它变成进入 `Live market data` 前的显式门禁。目标是：应用启动时继续做一次 metadata 预热；每次进入 Live 前都检查 `missing/stale` 状态；如需刷新则弹出独立的 metadata 准备流程，完成后再自动回到 Live 链路。
 
 ### Plan
 
-1. 调整 `internal/router/server_test.go`，把 `log.append` 后对 `get_view_snapshot` 中日志可见性的断言改成带超时的轮询，而不是单次立即断言。
-2. 仅修测试，不改变生产中的 router / IPC 语义。
-3. 运行 `go test ./internal/router -run TestRouterMarketSnapshotRoundTrip -count=50` 与 `go test ./...`。
+1. 在 `internal/tui` 增加独立的 metadata 准备屏幕/流程，和 Python runtime setup 分开。
+2. 在 `metadata_gate` 中增加 `missing/stale` 状态检查；进入 `Live market data` 前先检查状态，缺失或过期时不直接刷新，而是提示进入 metadata 准备流程。
+3. metadata 准备完成后自动回到 `Live` 链路；启动时继续保留一次 metadata 预热，形成双保险。
+4. 更新相关测试和 README/release 文档。
+5. 运行 `go test ./internal/tui ./internal/metadata` 与 `go test ./...`。
 
 ### Approval
 
-Approved by user in-thread on 2026-04-09 ("ok").
+Approved by user in-thread on 2026-04-09 ("确认").
 
 ### Validation
 
-- `gofmt -w internal/router/server_test.go` passed.
-- `go test ./internal/router -run TestRouterMarketSnapshotRoundTrip -count=50` passed.
+- `gofmt -w internal/tui/app.go internal/tui/metadata_flow.go internal/tui/metadata_gate.go internal/tui/metadata_gate_test.go internal/tui/view_main.go internal/tui/view_main_test.go internal/tui/view_metadata.go internal/tui/view_metadata_test.go internal/tui/view_setup.go internal/tui/view_setup_test.go` passed.
+- `go test ./internal/tui ./internal/metadata` passed.
 - `go test ./...` passed.
 
 ### Postmortem

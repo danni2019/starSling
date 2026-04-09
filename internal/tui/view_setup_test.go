@@ -58,9 +58,9 @@ func TestFinishBootstrapSetsFinalOutput(t *testing.T) {
 	}
 }
 
-func TestNormalizeSetupOutputTextConvertsCarriageReturns(t *testing.T) {
+func TestNormalizeProgressOutputTextConvertsCarriageReturns(t *testing.T) {
 	raw := "Downloading...\r50%\r100%\nready\r\n"
-	got := normalizeSetupOutputText(raw)
+	got := normalizeProgressOutputText(raw)
 	want := "Downloading...\n50%\n100%\nready\n"
 	if got != want {
 		t.Fatalf("normalized output = %q, want %q", got, want)

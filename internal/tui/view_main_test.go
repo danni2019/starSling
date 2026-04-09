@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"errors"
 	"path/filepath"
 	"testing"
 
@@ -15,6 +14,9 @@ func TestOpenLiveScreenFromMainBlocksPlaceholderConfig(t *testing.T) {
 	origBundledPythonPathFn := bundledPythonPathFn
 	bundledPythonPathFn = func() string { return "/tmp/starsling-test-python" }
 	defer func() { bundledPythonPathFn = origBundledPythonPathFn }()
+	origLiveMetadataStateFn := liveMetadataStateFn
+	liveMetadataStateFn = func(ui *UI) (liveMetadataState, error) { return liveMetadataState{}, nil }
+	defer func() { liveMetadataStateFn = origLiveMetadataStateFn }()
 
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
@@ -73,9 +75,9 @@ func TestOpenLiveScreenFromMainAllowsConfiguredConfig(t *testing.T) {
 	origBundledPythonPathFn := bundledPythonPathFn
 	bundledPythonPathFn = func() string { return "/tmp/starsling-test-python" }
 	defer func() { bundledPythonPathFn = origBundledPythonPathFn }()
-	origEnsureLiveMetadataReadyFn := ensureLiveMetadataReadyFn
-	ensureLiveMetadataReadyFn = func(ui *UI) error { return nil }
-	defer func() { ensureLiveMetadataReadyFn = origEnsureLiveMetadataReadyFn }()
+	origLiveMetadataStateFn := liveMetadataStateFn
+	liveMetadataStateFn = func(ui *UI) (liveMetadataState, error) { return liveMetadataState{}, nil }
+	defer func() { liveMetadataStateFn = origLiveMetadataStateFn }()
 
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
@@ -110,9 +112,11 @@ func TestOpenLiveScreenFromMainBlocksWhenMetadataUnavailable(t *testing.T) {
 	origBundledPythonPathFn := bundledPythonPathFn
 	bundledPythonPathFn = func() string { return "/tmp/starsling-test-python" }
 	defer func() { bundledPythonPathFn = origBundledPythonPathFn }()
-	origEnsureLiveMetadataReadyFn := ensureLiveMetadataReadyFn
-	ensureLiveMetadataReadyFn = func(ui *UI) error { return errors.New("contract metadata unavailable") }
-	defer func() { ensureLiveMetadataReadyFn = origEnsureLiveMetadataReadyFn }()
+	origLiveMetadataStateFn := liveMetadataStateFn
+	liveMetadataStateFn = func(ui *UI) (liveMetadataState, error) {
+		return liveMetadataState{Missing: []string{"contract", "trade_time"}}, nil
+	}
+	defer func() { liveMetadataStateFn = origLiveMetadataStateFn }()
 
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
@@ -153,9 +157,9 @@ func TestFinishBootstrapResumesLiveFlow(t *testing.T) {
 		return ""
 	}
 	defer func() { bundledPythonPathFn = origBundledPythonPathFn }()
-	origEnsureLiveMetadataReadyFn := ensureLiveMetadataReadyFn
-	ensureLiveMetadataReadyFn = func(ui *UI) error { return nil }
-	defer func() { ensureLiveMetadataReadyFn = origEnsureLiveMetadataReadyFn }()
+	origLiveMetadataStateFn := liveMetadataStateFn
+	liveMetadataStateFn = func(ui *UI) (liveMetadataState, error) { return liveMetadataState{}, nil }
+	defer func() { liveMetadataStateFn = origLiveMetadataStateFn }()
 
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
@@ -188,6 +192,44 @@ func TestFinishBootstrapResumesLiveFlow(t *testing.T) {
 	}
 }
 
+func TestFinishMetadataRefreshResumesLiveFlow(t *testing.T) {
+	origBundledPythonPathFn := bundledPythonPathFn
+	bundledPythonPathFn = func() string { return "/tmp/starsling-test-python" }
+	defer func() { bundledPythonPathFn = origBundledPythonPathFn }()
+	origLiveMetadataStateFn := liveMetadataStateFn
+	liveMetadataStateFn = func(ui *UI) (liveMetadataState, error) { return liveMetadataState{}, nil }
+	defer func() { liveMetadataStateFn = origLiveMetadataStateFn }()
+
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tempHome, ".config"))
+
+	ui := testMainMenuUI()
+
+	cfg, err := config.Default()
+	if err != nil {
+		t.Fatalf("default config: %v", err)
+	}
+	cfg.LiveMD.Host = "127.0.0.1"
+	cfg.LiveMD.Port = 4123
+	if err := configstore.Save(configstore.DefaultName(), cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	if err := configstore.SetDefault(configstore.DefaultName()); err != nil {
+		t.Fatalf("set default config: %v", err)
+	}
+
+	ui.openMetadataScreen(false, true)
+	ui.finishMetadataRefresh("Market metadata is ready\n", nil)
+
+	if ui.currentScreen() != screenLive {
+		t.Fatalf("expected metadata refresh success to resume live flow, got %s", ui.currentScreen())
+	}
+	if ui.metadataResumeLive {
+		t.Fatalf("expected metadataResumeLive to be cleared after successful resume")
+	}
+}
+
 func TestMaybePromptRuntimeBootstrapOnStartupShowsModal(t *testing.T) {
 	origBundledPythonPathFn := bundledPythonPathFn
 	bundledPythonPathFn = func() string { return "" }
@@ -212,10 +254,12 @@ func testMainMenuUI() *UI {
 
 	main := ui.buildMainScreen()
 	setupView := ui.buildSetupScreen()
+	metadataView := ui.buildMetadataScreen()
 	configView := ui.buildConfigScreen()
 	ui.pages.AddPage(string(screenMain), main, true, true)
 	ui.pages.AddPage(string(screenLive), tview.NewBox(), true, false)
 	ui.pages.AddPage(string(screenSetup), setupView, true, false)
+	ui.pages.AddPage(string(screenMetadata), metadataView, true, false)
 	ui.pages.AddPage(string(screenConfig), configView, true, false)
 	ui.app.SetRoot(ui.pages, true)
 	ui.setCurrentScreen(screenMain)

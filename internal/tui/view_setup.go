@@ -49,6 +49,7 @@ func (ui *UI) buildSetupScreen() tview.Primitive {
 }
 
 func (ui *UI) showSetupMenu() {
+	ui.setupActions.SetCurrentItem(0)
 	ui.app.SetFocus(ui.setupActions)
 	if !ui.setupAutoStart {
 		return
@@ -104,7 +105,7 @@ func (ui *UI) appendSetupOutputChunk(chunk string) {
 		return
 	}
 	ui.setupOutputMu.Lock()
-	ui.setupOutputText += normalizeSetupOutputChunk(chunk, &ui.setupOutputCR)
+	ui.setupOutputText += normalizeProgressOutputChunk(chunk, &ui.setupOutputCR)
 	text := ui.setupOutputText
 	ui.setupOutputMu.Unlock()
 	ui.renderSetupOutput(text)
@@ -116,7 +117,7 @@ func (ui *UI) setSetupOutputText(text string) {
 	}
 	ui.setupOutputMu.Lock()
 	ui.setupOutputCR = false
-	ui.setupOutputText = normalizeSetupOutputText(text)
+	ui.setupOutputText = normalizeProgressOutputText(text)
 	current := ui.setupOutputText
 	ui.setupOutputMu.Unlock()
 	ui.renderSetupOutput(current)
@@ -130,12 +131,12 @@ func (ui *UI) renderSetupOutput(text string) {
 	ui.setupOutput.ScrollToEnd()
 }
 
-func normalizeSetupOutputText(text string) string {
+func normalizeProgressOutputText(text string) string {
 	pendingCR := false
-	return normalizeSetupOutputChunk(text, &pendingCR)
+	return normalizeProgressOutputChunk(text, &pendingCR)
 }
 
-func normalizeSetupOutputChunk(chunk string, pendingCR *bool) string {
+func normalizeProgressOutputChunk(chunk string, pendingCR *bool) string {
 	if chunk == "" {
 		return ""
 	}

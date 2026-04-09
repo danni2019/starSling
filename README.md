@@ -50,7 +50,7 @@ Live 多面板界面：
 - 期货市场表排序、过滤、主力模式
 - 期权链按焦点合约/标的联动
 - Live 面板筛选、持久化与恢复
-- 主菜单 `Config` / `Settings` / `Setup Python runtime`
+- 主菜单 `Config` / `Settings` / `Setup Python runtime` / `Refresh market metadata`
 - 未配置真实 `Host` / `Port` 时，UI 会阻止进入 `Live market data`
 
 ### 套利监控
@@ -62,7 +62,7 @@ Live 多面板界面：
 
 ### 运行时与发布辅助
 
-- `Setup Python runtime` 页面可在应用内引导首次 bootstrap
+- `Setup Python runtime` 与 `Refresh market metadata` 分离，分别处理 runtime 与 metadata 准备
 - `scripts/bootstrap_python.sh` 仍可作为手动 fallback
 - `go run ./cmd/starsling doctor` 可执行发布/环境自检
 - metadata 源配置、缓存目录与默认配置路径都已文档化
@@ -87,9 +87,10 @@ Live 多面板界面：
 ```
 
 3. 如果本地 runtime 尚未初始化，应用会提示进入 `Setup Python runtime`
-4. 首次进入 `Live market data` 时，如本地 metadata 缺失或过期，应用会先尝试刷新 contract / trade_time metadata
-5. 完成 bootstrap 后，再在 `Config` 页面填写真实 `Host` / `Port`
-6. 然后进入 `Live market data`
+4. 应用启动时会做一次 metadata 预热
+5. 每次进入 `Live market data` 前，都会检查 contract / trade_time metadata；如缺失或过期，会引导进入独立的 `Refresh market metadata`
+6. 在 `Config` 页面填写真实 `Host` / `Port`
+7. 然后进入 `Live market data`
 
 ### 从源码本地运行
 
@@ -144,7 +145,8 @@ go run ./cmd/starsling doctor
 - 发布包与仓库默认配置中，`live-md.host` 为空，`live-md.port` 为 `0`
 - 不预设任何 front 地址
 - 如果 bundled runtime 尚未准备好，主界面和 `Live market data` 入口都会引导进入 `Setup Python runtime`
-- 首次进入 `Live market data` 时，如本地 metadata 缺失或过期，应用会主动尝试刷新 metadata；当前公开源地址为 `dict.openctp.cn`
+- 应用启动时会先做一次 metadata 预热
+- 每次进入 `Live market data` 前，都会再次检查 metadata 是否缺失或过期；如需要，会引导进入独立的 `Refresh market metadata`
 - 进入应用后，请先在 `Config` 页面填写真实可用的 `Host` 与 `Port`
 - 未完成配置前，UI 不允许进入 `Live market data`
 

@@ -14,13 +14,57 @@ import (
 
 var (
 	metadataLoadSourcesFn          = metadata.LoadSources
+	metadataLoadFn                 = metadata.Load
 	metadataRefreshIfStaleFn       = metadata.RefreshIfStale
 	metadataRefreshAllFn           = metadata.RefreshAll
 	metadataLoadContractMappingsFn = metadata.LoadContractMappings
 	metadataLoadTradeSegmentsFn    = metadata.LoadTradeSegments
 	metadataNowFn                  = time.Now
 	ensureLiveMetadataReadyFn      = func(ui *UI) error { return ui.ensureLiveMetadataReady() }
+	liveMetadataStateFn            = func(ui *UI) (liveMetadataState, error) { return ui.liveMetadataState() }
 )
+
+var requiredLiveMetadataNames = []string{"contract", "trade_time"}
+
+type liveMetadataState struct {
+	Missing []string
+	Stale   []string
+}
+
+func (s liveMetadataState) Ready() bool {
+	return len(s.Missing) == 0 && len(s.Stale) == 0
+}
+
+func (s liveMetadataState) Message() string {
+	parts := []string{"Market metadata is required before entering Live Market Data."}
+	if len(s.Missing) > 0 {
+		parts = append(parts, fmt.Sprintf("Missing: %s", strings.Join(s.Missing, ", ")))
+	}
+	if len(s.Stale) > 0 {
+		parts = append(parts, fmt.Sprintf("Stale: %s", strings.Join(s.Stale, ", ")))
+	}
+	parts = append(parts, "Open Metadata Setup to download or refresh metadata now.")
+	return strings.Join(parts, "\n\n")
+}
+
+func (ui *UI) liveMetadataState() (liveMetadataState, error) {
+	if _, err := metadataLoadSourcesFn(); err != nil {
+		return liveMetadataState{}, fmt.Errorf("load metadata sources: %w", err)
+	}
+	now := metadataNowFn().UTC()
+	state := liveMetadataState{}
+	for _, name := range requiredLiveMetadataNames {
+		cached, err := metadataLoadFn(name)
+		if err != nil {
+			state.Missing = append(state.Missing, name)
+			continue
+		}
+		if metadata.IsStale(cached.LastUpdated, now, metadata.RefreshAfter) {
+			state.Stale = append(state.Stale, name)
+		}
+	}
+	return state, nil
+}
 
 func (ui *UI) ensureLiveMetadataReady() error {
 	logger := ui.logger

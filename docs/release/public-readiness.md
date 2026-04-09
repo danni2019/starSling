@@ -14,6 +14,7 @@
 - [x] 样例与默认 `live-md.host` / `live-md.port` 已改为未配置态（空 `host` + `port=0`）。
 - [x] 未配置真实 `Host` / `Port` 时，UI 会阻止进入 `Live market data`。
 - [x] 若 bundled runtime 缺失，主界面与 `Live market data` 入口都会引导进入 `Setup Python runtime`。
+- [x] 应用启动时会做一次 metadata 预热；每次进入 `Live market data` 前都会再次检查 metadata 是否缺失或过期，并在需要时引导进入独立的 metadata 准备流程。
 - [x] `.con` 运行时缓存文件已从版本控制中移除，并继续由 `.gitignore` 忽略。
 - [x] README 已明确当前 prerelease 的定位与外部依赖边界。
 - [x] 已落地 `.goreleaser.yaml` 与 GitHub release workflow 骨架。

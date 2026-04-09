@@ -35,6 +35,7 @@ const (
 	screenMain      screen = "main"
 	screenLive      screen = "live"
 	screenSetup     screen = "setup"
+	screenMetadata  screen = "metadata"
 	screenConfig    screen = "config"
 	screenSettings  screen = "settings"
 	screenDrilldown screen = "drilldown"
@@ -111,6 +112,16 @@ type UI struct {
 	setupRunning    bool
 	setupAutoStart  bool
 	setupResumeLive bool
+
+	metadataStatus     *tview.TextView
+	metadataOutput     *tview.TextView
+	metadataActions    *tview.List
+	metadataOutputMu   sync.Mutex
+	metadataOutputText string
+	metadataOutputCR   bool
+	metadataRunning    bool
+	metadataAutoStart  bool
+	metadataResumeLive bool
 
 	configPages       *tview.Pages
 	configMenu        *tview.List
@@ -312,12 +323,14 @@ func (ui *UI) buildScreens() {
 	main := ui.buildMainScreen()
 	liveView := ui.buildLiveScreen()
 	setup := ui.buildSetupScreen()
+	metadataView := ui.buildMetadataScreen()
 	configView := ui.buildConfigScreen()
 	settingsView := ui.buildSettingsScreen()
 
 	ui.pages.AddPage(string(screenMain), main, true, true)
 	ui.pages.AddPage(string(screenLive), liveView, true, false)
 	ui.pages.AddPage(string(screenSetup), setup, true, false)
+	ui.pages.AddPage(string(screenMetadata), metadataView, true, false)
 	ui.pages.AddPage(string(screenConfig), configView, true, false)
 	ui.pages.AddPage(string(screenSettings), settingsView, true, false)
 }
@@ -332,7 +345,7 @@ func (ui *UI) bindKeys() {
 		switch ui.currentScreen() {
 		case screenLive:
 			return ui.handleLiveKeys(event)
-		case screenSetup, screenConfig, screenSettings:
+		case screenSetup, screenMetadata, screenConfig, screenSettings:
 			if event.Key() == tcell.KeyEsc {
 				ui.setScreen(screenMain)
 				return nil
@@ -422,9 +435,11 @@ func (ui *UI) setScreen(next screen) {
 			ui.refreshLiveTradeSegments()
 			ui.startLiveProcessIfNeeded()
 		})
-	case screenSetup, screenConfig, screenSettings:
+	case screenSetup, screenMetadata, screenConfig, screenSettings:
 		if next == screenSetup {
 			ui.showSetupMenu()
+		} else if next == screenMetadata {
+			ui.showMetadataMenu()
 		} else if next == screenConfig {
 			ui.showConfigMenu()
 		} else {

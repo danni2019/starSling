@@ -44,6 +44,9 @@ func (ui *UI) buildMainScreen() tview.Primitive {
 	ui.menu.AddItem("Setup Python runtime", "", 0, func() {
 		ui.openSetupScreen(false, false)
 	})
+	ui.menu.AddItem("Refresh market metadata", "", 0, func() {
+		ui.openMetadataScreen(false, false)
+	})
 	ui.menu.AddItem("Config", "", 0, func() {
 		ui.setScreen(screenConfig)
 	})
@@ -90,6 +93,15 @@ func (ui *UI) openLiveScreenFromMain() {
 		)
 		return
 	}
+	metadataState, err := liveMetadataStateFn(ui)
+	if err != nil {
+		ui.promptLiveMetadataRequired(fmt.Sprintf("Market metadata is unavailable before entering Live Market Data.\n\nOpen Metadata Setup to retry now.\n\nDetails: %s", err.Error()), true)
+		return
+	}
+	if !metadataState.Ready() {
+		ui.promptLiveMetadataRequired(metadataState.Message(), true)
+		return
+	}
 	configName, cfg, err := configstore.LoadDefault()
 	if err != nil {
 		ui.promptLiveConfigRequired(fmt.Sprintf("Load config failed.\n\nConfigure Host and Port in Config before entering Live Market Data.\n\nDetails: %s", err.Error()))
@@ -97,10 +109,6 @@ func (ui *UI) openLiveScreenFromMain() {
 	}
 	if err := cfg.ValidateLiveMD(); err != nil {
 		ui.promptLiveConfigRequired(fmt.Sprintf("Config %q is not ready for Live Market Data.\n\nConfigure Host and Port in Config before continuing.\n\nDetails: %s", configName, err.Error()))
-		return
-	}
-	if err := ensureLiveMetadataReadyFn(ui); err != nil {
-		ui.promptLiveMetadataRequired(fmt.Sprintf("Contract metadata is required before entering Live Market Data.\n\nstarSling attempted to refresh metadata but it is still unavailable.\n\nCheck network access to dict.openctp.cn, then retry.\n\nDetails: %s", err.Error()))
 		return
 	}
 	ui.setScreen(screenLive)
@@ -129,10 +137,10 @@ func (ui *UI) promptLiveConfigRequired(message string) {
 	})
 }
 
-func (ui *UI) promptLiveMetadataRequired(message string) {
-	ui.showModal("live-metadata-required", message, []string{"Retry", "Cancel"}, func(index int, _ string) {
+func (ui *UI) promptLiveMetadataRequired(message string, resumeLive bool) {
+	ui.showModal("live-metadata-required", message, []string{"Open Metadata Setup", "Cancel"}, func(index int, _ string) {
 		if index == 0 {
-			ui.openLiveScreenFromMain()
+			ui.openMetadataScreen(true, resumeLive)
 			return
 		}
 		ui.app.SetFocus(ui.menu)

@@ -51,7 +51,8 @@ go run ./cmd/starsling doctor
 
 - 如果 bundled runtime 尚未准备好，主界面会提示进入 `Setup Python runtime`
 - 从 `Live market data` 入口进入时，如 runtime 缺失，也会被引导到 Setup
-- 从 `Live market data` 入口进入时，如本地 metadata 缺失或过期，也会先尝试刷新 contract / trade_time metadata
+- 应用启动时会先做一次 metadata 预热
+- 从 `Live market data` 入口进入时，如本地 metadata 缺失或过期，也会被引导到独立的 `Refresh market metadata`
 - bootstrap 完成后，可继续配置 `Host/Port` 并进入 Live
 
 如需验证手动 fallback 路径，也可执行：
@@ -94,7 +95,7 @@ goreleaser release --snapshot --clean
 - 当前 prerelease 不承诺外部行情依赖全部一键安装完成。
 - 当前“首次初始化”仍需要通过应用内 Setup 调用 bootstrap；只是不再要求用户先 clone 仓库或手动寻找脚本入口。
 - 默认 `live-md.host` 为空、`live-md.port` 为 `0`；用户必须先在 `Config` 页面配置真实值。
-- 首次进入 `Live market data` 仍依赖访问 `dict.openctp.cn` 来刷新 metadata；若网络不可达，UI 会明确阻止进入空白 Live 界面。
+- metadata 预热与 `Live` 前刷新都依赖访问 `dict.openctp.cn`；若网络不可达，UI 会明确阻止进入空白 Live 界面。
 - 如果 `goreleaser` 尚未安装，本文件中的发布 dry-run 步骤无法在本机执行，但 `doctor` 与 `go test ./...` 仍应先通过。
 
 ## Observed Local Result
